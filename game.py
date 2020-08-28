@@ -23,6 +23,7 @@ os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
 
 import pygame
 
+
 class Game:
     def __init__(self, logger: logging.Logger = None):
         """
@@ -37,8 +38,8 @@ class Game:
         self.screen_clock = None
 
         self.objects = [
-            Player(self, 0, 0, 45, pygame.image.load('sprite.png')),
-            Player2(self, 0, 100, 0, pygame.image.load('thatsok.png')),
+            Player(self, 0, 0, 45, pygame.image.load('res/sprite.png')),
+            Player2(self, 0, 100, 0, pygame.image.load('res/thatsok.png')),
         ]
 
         # dict of events and their corresponding functions to be run when caught
@@ -99,7 +100,7 @@ class Game:
         Gets called every frame, so make it fast.
         """
 
-        tex = pygame.image.load('tile_texture2.png')  # TODO: Move this so it's loaded once!
+        tex = pygame.image.load('res/tile_texture.png')  # TODO: Move this so it's loaded once!
 
         for y in range(0, self.screen.get_height(), tex.get_height()):
             for x in range(0, self.screen.get_width(), tex.get_width()):
@@ -219,7 +220,7 @@ class GameObject(pygame.sprite.Sprite):
         # how much should be corrected from the rotation
         pivot_offset = center.rotate(self.angle) - center
 
-        pos = ( # apply the offsets
+        pos = (  # apply the offsets
             self.x + min_x - pivot_offset[0],
             self.y - max_y + pivot_offset[1]
         )
@@ -317,6 +318,7 @@ class Player(GameObject):
 
         super(Player, self).draw(*args)
 
+
 class Player2(Player):
     def __init__(self, *args):
         super(Player2, self).__init__(*args)
@@ -326,8 +328,8 @@ class Player2(Player):
         self.key_right = pygame.K_d
         self.key_left = pygame.K_a
 
+
 if __name__ == '__main__':
-    _logger = None
     if USE_ADVANCED_LOGGING:
         _logger = logging.Logger('game')
         _logger.setLevel(logging.DEBUG if ADVANCED_LOGGING_SHOW_DEBUG else logging.INFO)
@@ -335,6 +337,8 @@ if __name__ == '__main__':
         _stdhandler = logging.StreamHandler()
         _stdhandler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] : %(message)s', '%d/%m/%Y %H:%M:%S'))
         _logger.addHandler(_stdhandler)
+    else:
+        _logger = None
 
     game = Game(logger=_logger)
     exit(game.run())
