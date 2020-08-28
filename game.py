@@ -5,6 +5,8 @@ ADVANCED_LOGGING_SHOW_DEBUG = True
 # screen dimensions
 SCREEN_W = 1280
 SCREEN_H = 720
+# resources
+RES_FOLDER = 'res'
 
 import os
 import math
@@ -23,7 +25,6 @@ os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
 
 import pygame
 
-
 class Game:
     def __init__(self, logger: logging.Logger = None):
         """
@@ -37,10 +38,7 @@ class Game:
         self.screen: pygame.Surface = None
         self.screen_clock = None
 
-        self.objects = [
-            Player(self, 0, 0, 45, pygame.image.load('res/sprite.png')),
-            Player2(self, 0, 100, 0, pygame.image.load('res/thatsok.png')),
-        ]
+        self.objects = []
 
         # dict of events and their corresponding functions to be run when caught
         self.event_callback = {
@@ -50,6 +48,13 @@ class Game:
         }
 
         self.keys_down = []
+        self.textures = self.Textures()
+
+    class Textures:
+        def __init__(self):
+            self.tile_magenta = pygame.image.load(
+                os.path.join(RES_FOLDER, 'tile_texture.png')
+            )
 
     def log(self, msg: str, level: int = 1):
         """
@@ -80,6 +85,11 @@ class Game:
         self.screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))  # TODO: Make screen size dynamic
         self.screen_clock = pygame.time.Clock()  # frame clock
 
+        self.objects = [
+            Player(self, 0, 0, 45, pygame.image.load('res/sprite.png')),
+            Player2(self, 0, 100, 0, pygame.image.load('res/thatsok.png')),
+        ]
+
         self.log('Starting event loop...')
         self.log(f'{len(self.objects):,} objects active')
         try:
@@ -100,11 +110,9 @@ class Game:
         Gets called every frame, so make it fast.
         """
 
-        tex = pygame.image.load('res/tile_texture.png')  # TODO: Move this so it's loaded once!
-
-        for y in range(0, self.screen.get_height(), tex.get_height()):
-            for x in range(0, self.screen.get_width(), tex.get_width()):
-                self.screen.blit(tex, (x, y))
+        for y in range(0, self.screen.get_height(), self.textures.tile_magenta.get_height()):
+            for x in range(0, self.screen.get_width(), self.textures.tile_magenta.get_width()):
+                self.screen.blit(self.textures.tile_magenta, (x, y))
 
         for game_object in self.objects:
             game_object.update()
