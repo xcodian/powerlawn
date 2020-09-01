@@ -25,6 +25,23 @@ os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
 
 import pygame
 
+
+def is_point_in_circle(point: tuple, center: tuple, radius: int):
+    px, py = point
+    cx, cy = center
+
+    diff_x = abs(cx - px)
+    diff_y = abs(cy - py)
+
+    if (diff_y > radius) or (diff_x > radius):
+        return False
+
+    dist = diff_x * diff_x + diff_y * diff_y
+    if round(dist) > radius * radius:
+        return False
+    return True
+
+
 class Game:
     def __init__(self, logger: logging.Logger = None):
         """
@@ -50,10 +67,34 @@ class Game:
         self.keys_down = []
         self.textures = self.Textures()
 
+        self.tile_gird = []
+        self.path_radius = 5
+
     class Textures:
         def __init__(self):
-            self.tile_magenta = pygame.image.load(
+            self.base_tile_size = 10
+
+            # tiles
+            self.tile_dev = pygame.image.load(
                 os.path.join(RES_FOLDER, 'tile_texture.png')
+            )
+
+            self.tile_full = pygame.image.load(
+                os.path.join(RES_FOLDER, 'tiles', 'full.png')
+            )
+            self.tile_empty = pygame.image.load(
+                os.path.join(RES_FOLDER, 'tiles', 'empty.png')
+            )
+
+            # accessed from tilemap
+            self.tile_mappings = [
+                self.tile_full,  # 0 -> full tile
+                self.tile_empty,  # 0 -> empty tile
+            ]
+
+            # player sprite
+            self.player = pygame.image.load(
+                os.path.join(RES_FOLDER, 'char.png')
             )
 
     def log(self, msg: str, level: int = 1):
@@ -86,9 +127,11 @@ class Game:
         self.screen_clock = pygame.time.Clock()  # frame clock
 
         self.objects = [
-            Player(self, 0, 0, 45, pygame.image.load('res/sprite.png')),
-            Player2(self, 0, 100, 0, pygame.image.load('res/thatsok.png')),
+            Player(self, 0, 0, 45, self.textures.player),
         ]
+
+        self.log('Creating initial tilemap...')
+        self.create_tilemap()
 
         self.log('Starting event loop...')
         self.log(f'{len(self.objects):,} objects active')
@@ -104,20 +147,58 @@ class Game:
         self.log('Game exited normally', 0)
         return 0
 
+    def create_tilemap(self):
+        """
+        Generates empty tile array the size of the screen.
+        Its strucure is equrivalent to
+        [
+            [0, 0, 0, 0, (...)],
+            [0, 0, 0, 0, (...)],
+            [0, 0, 0, 0, (...)],
+        ]
+        Where each number represents the tile state - here, 0 is full tile.
+        To reference any cell within it: tilemap[row][column]
+        """
+        for _ in range(0, self.screen.get_height(), self.textures.base_tile_size):
+            self.tile_gird.append(
+                [0 for _ in range(0, self.screen.get_width(), self.textures.base_tile_size)]
+            )
+
+    def draw_background(self):
+        """
+        Update and render the tilemap to the screen.
+        This function takes care of:
+            * The player clearing out area
+            * Calculating the radius of the cleared area
+            * Calculating the correct tile textures
+        """
+        player_cell_x = int(self.objects[0].globalRect.centerx * (1 / self.textures.base_tile_size))
+        player_cell_y = int(self.objects[0].globalRect.centery * (1 / self.textures.base_tile_size))
+
+        # cell y, row data
+        for cy, r in enumerate(self.tile_gird):
+            # cell x, column data
+            for cx, c in enumerate(r):
+                # screenspace position
+                ss_pos = (cx * self.textures.base_tile_size, cy * self.textures.base_tile_size)
+
+                if is_point_in_circle((cx, cy), (player_cell_x, player_cell_y), self.path_radius):
+                    c = 1
+                    self.tile_gird[cy][cx] = 1
+
+                self.screen.blit(self.textures.tile_mappings[c], ss_pos)
+
     def screen_update(self):
         """
         Update all game objects, draw them to the screen and refresh it.
         Gets called every frame, so make it fast.
         """
-
-        for y in range(0, self.screen.get_height(), self.textures.tile_magenta.get_height()):
-            for x in range(0, self.screen.get_width(), self.textures.tile_magenta.get_width()):
-                self.screen.blit(self.textures.tile_magenta, (x, y))
+        self.draw_background()
 
         for game_object in self.objects:
             game_object.update()
 
-        pygame.display.update()  # TODO: More efficient way of rendering!
+        pygame.display.update()
 
     def game_quit(self, e):
         """Event callback method to quit the game. """
@@ -263,17 +344,10 @@ class Player(GameObject):
         self.speed = 0  # speed of the player, used in update()
         self.turnspeed = 1
 
-        self.key_up = pygame.K_UP
-        self.key_down = pygame.K_DOWN
-        self.key_right = pygame.K_RIGHT
-        self.key_left = pygame.K_LEFT
-
-        self.trail = [
-            (self.globalRect.centerx, self.globalRect.centery),
-            (self.globalRect.centerx, self.globalRect.centery)
-        ]
-
-        self.frames_since_last_trail_point = 0
+        self.key_up = pygame.K_w
+        self.key_down = pygame.K_s
+        self.key_right = pygame.K_d
+        self.key_left = pygame.K_a
 
     def update(self):
         """
@@ -295,9 +369,6 @@ class Player(GameObject):
 
         sx = math.cos(math.radians(-self.angle)) * self.speed
         sy = math.sin(math.radians(-self.angle)) * self.speed
-
-        pygame.draw.rect(self.parent.screen, 0x0000ff, self.globalRect, 1)
-
         self.draw()
 
         pygame.draw.line(
@@ -312,29 +383,6 @@ class Player(GameObject):
             self.x += sx
         if self.parent.screen.get_height() > self.globalRect.center[1] + sy > 0:
             self.y += sy
-
-        if (max(sx, sy) > 0 or min(sx, sy) < 0) and self.frames_since_last_trail_point > 10:
-            self.trail.append(
-                (self.globalRect.centerx, self.globalRect.centery)
-            )
-            self.frames_since_last_trail_point = 0
-
-        self.frames_since_last_trail_point += 1
-
-    def draw(self, *args):
-        pygame.draw.lines(self.parent.screen, 0xff0000, False, self.trail, 5)
-
-        super(Player, self).draw(*args)
-
-
-class Player2(Player):
-    def __init__(self, *args):
-        super(Player2, self).__init__(*args)
-
-        self.key_up = pygame.K_w
-        self.key_down = pygame.K_s
-        self.key_right = pygame.K_d
-        self.key_left = pygame.K_a
 
 
 if __name__ == '__main__':
