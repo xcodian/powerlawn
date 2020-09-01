@@ -1,11 +1,25 @@
+'''
+██████╗  ██████╗ ██╗    ██╗███████╗██████╗ ██╗      █████╗ ██╗    ██╗███╗   ██╗
+██╔══██╗██╔═══██╗██║    ██║██╔════╝██╔══██╗██║     ██╔══██╗██║    ██║████╗  ██║
+██████╔╝██║   ██║██║ █╗ ██║█████╗  ██████╔╝██║     ███████║██║ █╗ ██║██╔██╗ ██║
+██╔═══╝ ██║   ██║██║███╗██║██╔══╝  ██╔══██╗██║     ██╔══██║██║███╗██║██║╚██╗██║
+██║     ╚██████╔╝╚███╔███╔╝███████╗██║  ██║███████╗██║  ██║╚███╔███╔╝██║ ╚████║
+╚═╝      ╚═════╝  ╚══╝╚══╝ ╚══════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝ ╚═╝  ╚═══╝
+                            by Martin Velikov
+'''
+VERSION = '1.0'
+
 # incorporate level-based logging instead of unfiltere print
 USE_ADVANCED_LOGGING = True
 # show debug prints? warning: spams console
 ADVANCED_LOGGING_SHOW_DEBUG = True
 # screen dimensions
+FRAME_W = 700
+FRAME_H = 700
+# frame dimensions
 SCREEN_W = 1280
 SCREEN_H = 720
-# resources
+# resources folder
 RES_FOLDER = 'res'
 
 import os
@@ -13,17 +27,14 @@ import math
 import time
 import traceback
 import logging
-
 import warnings
 
-# hide DeprecationWarning for floats
-# Why am I doing this? Because I don't want to
+# hide DeprecationWarning for float coordinate movement
 warnings.filterwarnings("ignore", category=DeprecationWarning)
-
 # hide the annoying prompt message pygame comes with
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
 
-import pygame
+import pygame # the one and only
 
 
 def is_point_in_circle(point: tuple, center: tuple, radius: int):
@@ -52,7 +63,11 @@ class Game:
         self.running = False  # is the game running?
         self.logger = logger
 
-        self.screen: pygame.Surface = None
+        # frame where the playing field is
+        self.frame: pygame.Surface = pygame.Surface((FRAME_W, FRAME_H))
+        # screen
+        self.screen: pygame.Surface = None # initialized later
+
         self.screen_clock = None
 
         self.objects = []
@@ -68,7 +83,7 @@ class Game:
         self.textures = self.Textures()
 
         self.tile_gird = []
-        self.path_radius = 5
+        self.path_radius = 2
 
     class Textures:
         def __init__(self):
@@ -120,8 +135,9 @@ class Game:
         If this function returns, then the game has ended.
         Returns the exit code for the game, run this last.
         """
-        self.log(f'Initializing screen ({SCREEN_W}x{SCREEN_H})')
+        self.log(f'Initializing screen ({FRAME_W}x{FRAME_H})')
         pygame.init()
+        pygame.display.set_caption(f'Power Lawn v{VERSION}')
         self.running = True
         self.screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))  # TODO: Make screen size dynamic
         self.screen_clock = pygame.time.Clock()  # frame clock
@@ -159,9 +175,9 @@ class Game:
         Where each number represents the tile state - here, 0 is full tile.
         To reference any cell within it: tilemap[row][column]
         """
-        for _ in range(0, self.screen.get_height(), self.textures.base_tile_size):
+        for _ in range(0, self.frame.get_height(), self.textures.base_tile_size):
             self.tile_gird.append(
-                [0 for _ in range(0, self.screen.get_width(), self.textures.base_tile_size)]
+                [0 for _ in range(0, self.frame.get_width(), self.textures.base_tile_size)]
             )
 
     def draw_background(self):
@@ -186,7 +202,7 @@ class Game:
                     c = 1
                     self.tile_gird[cy][cx] = 1
 
-                self.screen.blit(self.textures.tile_mappings[c], ss_pos)
+                self.frame.blit(self.textures.tile_mappings[c], ss_pos)
 
     def screen_update(self):
         """
@@ -198,6 +214,8 @@ class Game:
         for game_object in self.objects:
             game_object.update()
 
+        self.screen.fill(0x262626)
+        self.screen.blit(self.frame, (10, 10))
         pygame.display.update()
 
     def game_quit(self, e):
@@ -281,7 +299,7 @@ class GameObject(pygame.sprite.Sprite):
         """
 
         if surface is None:
-            surface = self.parent.screen
+            surface = self.parent.frame
 
         img_w, img_h = self.image.get_size()
 
@@ -372,16 +390,16 @@ class Player(GameObject):
         self.draw()
 
         pygame.draw.line(
-            self.parent.screen, 0xff0000,
+            self.parent.frame, 0xff0000,
             self.globalRect.center, (
                 self.globalRect.center[0] + (sx * 100),
                 self.globalRect.center[1] + (sy * 100),
             ), 2
         )
 
-        if self.parent.screen.get_width() > self.globalRect.center[0] + sx > 0:
+        if self.parent.frame.get_width() > self.globalRect.center[0] + sx > 0:
             self.x += sx
-        if self.parent.screen.get_height() > self.globalRect.center[1] + sy > 0:
+        if self.parent.frame.get_height() > self.globalRect.center[1] + sy > 0:
             self.y += sy
 
 
