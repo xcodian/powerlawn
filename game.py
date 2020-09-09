@@ -1,4 +1,5 @@
-'''
+#!/usr/bin/python
+"""
 ██████╗  ██████╗ ██╗    ██╗███████╗██████╗ ██╗      █████╗ ██╗    ██╗███╗   ██╗
 ██╔══██╗██╔═══██╗██║    ██║██╔════╝██╔══██╗██║     ██╔══██╗██║    ██║████╗  ██║
 ██████╔╝██║   ██║██║ █╗ ██║█████╗  ██████╔╝██║     ███████║██║ █╗ ██║██╔██╗ ██║
@@ -6,7 +7,7 @@
 ██║     ╚██████╔╝╚███╔███╔╝███████╗██║  ██║███████╗██║  ██║╚███╔███╔╝██║ ╚████║
 ╚═╝      ╚═════╝  ╚══╝╚══╝ ╚══════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝ ╚═╝  ╚═══╝
                             by Martin Velikov
-'''
+"""
 import random
 
 VERSION = '1.0'
@@ -15,6 +16,8 @@ VERSION = '1.0'
 USE_ADVANCED_LOGGING = True
 # show debug prints? warning: spams console
 ADVANCED_LOGGING_SHOW_DEBUG = True
+# show debug draws on screen? eg. bounding boxes
+PERFORM_DEBUG_DRAWS = True
 # screen dimensions
 FRAME_W = 700
 FRAME_H = 700
@@ -38,36 +41,114 @@ os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
 
 import pygame  # the one and only
 
+from pygame import Vector2  # this is used a lot
 
-def weight_point_in_circle(point: tuple, center: tuple, radius: int, corner_threshold: float = 1.5):
-    """
-    Function to decide whether a certain point should be a full, half or empty tile.
-    """
-    px, py = point
-    cx, cy = center
 
-    diff_x = abs(cx - px)
-    diff_y = abs(cy - py)
+def weight_point_in_circle(
+        point: tuple,
+        center: tuple,
+        radius: int,
+        corner_threshold: float = 1.5
+):
+    """
+    Function to decide whether a certain grid coordinate should be a full, half or empty tile.
+
+        Arguments:
+            point (tuple): x, y of the point to be tested
+            center (tuple): x, y of the origin (center) point
+            radius (int): radius of certainly empty tiles, does not include half tiles
+            corner_threshold (float): threshold that decides if the tile should be a half tile instead of empty
+
+        Returns:
+            int: the type of the tested tile
+
+            0 if empty tile
+            1 if full tile
+            2 if half tile
+    """
+    diff_x, diff_y = map(lambda x, y: abs(x-y), center, point)  # subtract point from center then abs for both x and y
 
     if (diff_y > radius) or (diff_x > radius):
-        return False
+        return 0  # eliminate any obviously out of bounds tiles
 
-    dist = diff_x * diff_x + diff_y * diff_y
-
+    # precalculate pythagoras distance squared
+    dist_squared = (diff_x * diff_x) + (diff_y * diff_y)
     # precalculate radius sqaured
-    rs = radius * radius
+    radius_squared = radius * radius
     # precalculate rounded distance
-    rd = round(dist)
+    rounded_distance = round(dist_squared)
 
-    if rd < rs:  # distance within radius
+    if rounded_distance < radius_squared:  # distance within radius
         return 1  # full tile
-    elif rd < rs * corner_threshold and diff_x < radius:  # distance on edge, threshold of 0.2
+    elif rounded_distance < radius_squared * corner_threshold and diff_x < radius:  # distance on edge
         return 2  # half tile
     # outside of any thresholds
     return 0  # empty tile
 
 
 class Game:
+    """
+    Main game object that should take care of most of the game logic such as score, keeping track of objects
+    and calling their update methods.
+
+    Attributes
+    ----------
+    running : bool
+        Whether the game is currently updating events
+
+    logger : Optional[logging.Logger]
+        The logger with which to log console messages
+        Can be None to use default print() call
+
+    frame : pygame.Surface
+        The frame surface within which to render the game
+
+    screen : pygame.Surface
+        Binding to the initialized PyGame screen
+
+    screen_clock : pygame.time.Clock
+        Timing clock to keep framerate constant
+
+    objects : List[GameObject]
+        List of game objects to be updated
+        Note that index 0 should always be reserved for the player
+
+    event_callback : dict{pygame.event.Event : function}
+        Bindings from PyGame events to class methods
+        If a method is within this list, it should have at least one variable to catch the original event
+
+        Example:
+        def event_function(e):
+            ...
+
+        Note the extra `e` argument here. Although it may be unused, it is required for that function
+        to be within the event_callback dictionary.
+
+    keys_down : List[int]
+        List of currently pressed keys, usually referenced by game objects
+
+    textures : Game.Textures
+        Texture handler for all game sprites, referenced upon creation of GameObject
+
+    tile_grid : List[List[int], ...]
+        Two-dimensional array containing the state of each tile
+        this can represent:
+            * 0 for full (visually transparent)
+            * 1 for empty (visually mown)
+            * 2 for half (visually half-mown)
+
+    path_radius : int
+        radius within which to generate path
+        called upon pre-baking of the path quadrant
+
+    path_template : List[List[int]]
+        pre-generated quadrant of the player path at runtime
+        see method `bake_path_quadrant` for generation
+        this quadrant is generated once at the beginning, then masked four times
+        every frame depending on the player's tile position
+        see method `update_path` to see this in action
+    """
+
     def __init__(self, logger: logging.Logger = None):
         """
         Base Game which takes care of the logic. Manages and updates its objects.
@@ -95,10 +176,13 @@ class Game:
         self.keys_down = []
         # textures to load
         self.textures = None
-        #
+        # fonts to load
+        self.fonts = None
+        # background tile grid
         self.tile_grid = []
-
+        # player trail radius
         self.path_radius = 2
+        # player quadrant
         self.path_template = []
 
     class Textures:
@@ -108,33 +192,34 @@ class Game:
 
             # tiles
             self.tile_dev = pygame.image.load(
-                os.path.join(RES_FOLDER, 'dev.png')
+                os.path.join(RES_FOLDER, 'img', 'tiles', 'dev.png')
             )
             self.tile_empty = pygame.image.load(
-                os.path.join(RES_FOLDER, 'tiles', 'empty.png')
+                os.path.join(RES_FOLDER, 'img', 'tiles', 'empty.png')
             )
             self.tile_half = pygame.image.load(
-                os.path.join(RES_FOLDER, 'tiles', 'half.png')
+                os.path.join(RES_FOLDER, 'img', 'tiles', 'half.png')
             )
 
             # accessed from tilemap
             self.tile_mappings = [
                 None,  # 0 -> full tile
                 self.tile_empty,  # 1 -> empty tile
-                self.tile_half,  # 2 -> half tile
+                self.tile_half,  # 2 -> half tile,
+                self.tile_dev
             ]
 
             # player sprite
             self.player = pygame.transform.scale(
                 pygame.image.load(
-                    os.path.join(RES_FOLDER, 'char.png')
-                ), (111, 60)
+                    os.path.join(RES_FOLDER, 'img', 'char.png')
+                ), (150, 60)
             )
 
             # background tile
             self.tile_bg_grass = pygame.transform.scale(
                 pygame.image.load(
-                    os.path.join(RES_FOLDER, 'tiles', 'bgtile.png')
+                    os.path.join(RES_FOLDER, 'img', 'tiles', 'bgtile.png')
                 ), (self.base_bg_tile_size, self.base_bg_tile_size)
             )
 
@@ -143,15 +228,24 @@ class Game:
 
             self.enemy = pygame.transform.scale(
                 pygame.image.load(
-                    os.path.join(RES_FOLDER, 'enemy.png')
+                    os.path.join(RES_FOLDER, 'img', 'enemy', '0.png')
                 ), (100, 200)
+            )
+
+    class Fonts:
+        def __init__(self):
+            self.comic_sans = pygame.font.Font(
+                'res'
             )
 
     def log(self, msg: str, level: int = 1):
         """
         Log things to the console. Respects USE_ADVANCED_LOGGING.
-        :param msg: Message to log to the console.
-        :param level: Level of severity. 0=DEBUG, 1=INFO (default), 2=WARNING, 3=ERROR
+
+        Parameters:
+            msg (str): Message to log to the console.
+            level (Optional[int]): Message severity: 0 DEBUG, 1 INFO, 2 WARNING, 3 CRITICAL
+
         """
         if self.logger is not None:
             callback = [
@@ -164,6 +258,10 @@ class Game:
             return  # run the corresponding function with the `msg` argument then return
         print(f'[{["DEBUG", "INFO", "WARNING", "ERROR"][level]}] : {msg}')  #
 
+    @property
+    def player(self):
+        return self.objects[0]
+
     def run(self):
         """
         Initialize and run the game forever until it quits.
@@ -174,11 +272,14 @@ class Game:
         self.log('Loading textures...')
         self.textures = self.Textures()
 
+        self.log('Loading fonts...')
+        pygame.font.init()
+
         # init the screen and prepare it
         self.log(f'Initializing screen ({SCREEN_W}x{SCREEN_H})')
         pygame.init()
         pygame.display.set_caption(f'Power Lawn v{VERSION}')
-        self.screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))  # TODO: Make screen size dynamic
+        self.screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
         self.screen_clock = pygame.time.Clock()  # frame clock
 
         # create the game objects
@@ -190,7 +291,7 @@ class Game:
         ]
 
         # set enemy target
-        self.objects[1].target = self.objects[0]
+        self.objects[1].target = self.player
 
         # make the big tile array
         self.log('Baking initial tilemap...')
@@ -210,7 +311,7 @@ class Game:
         self.log(f'{len(self.objects):,} objects active')
         try:
             while self.running:
-                self.screen_update()  # update everything
+                self.full_update()  # update everything
                 self.process_events(pygame.event.get())  # process event queue
                 self.screen_clock.tick(60)  # cAlm tHe TiDe
         except Exception as e:
@@ -243,25 +344,25 @@ class Game:
         This is calculated once and saved to quarter_path_template.
         It is applied every frame from the baked template, without being recalculated. Speed!
         """
-        self.path_template = []
-        for ri in range(self.path_radius + 1):
-            r = []
-            for ci in range(self.path_radius + 1):
-                r.append(weight_point_in_circle((ci, ri), (0, 0), self.path_radius))
-            self.path_template.append(r)
+        self.path_template = []  # output array
+        for ri in range(self.path_radius + 1):  # row index
+            r = []  # temporary row array
+            for ci in range(self.path_radius + 1):  # column index
+                r.append(  # add the type of that cell to that index, using the weighting function
+                    weight_point_in_circle((ci, ri), (0, 0), self.path_radius)
+                )
+            self.path_template.append(r)  # add the row to the path quadrant
 
-        if ADVANCED_LOGGING_SHOW_DEBUG:
-            def convert(v):
-                return ['[-]', '[#]', '[$]'][v]
-
+        if ADVANCED_LOGGING_SHOW_DEBUG:  # show what the quadrant looks like once baked
             s = ''
             for r in self.path_template:
-                s += (' '*30) + ''.join(map(convert, r)) + '\n'
-            self.log('Path quadrant result (#/full, $/half, -/empty): \n'+s.rstrip(), 0)
+                s += (' ' * 30) + ''.join(map(lambda v: ['[-]', '[#]', '[$]'][v], r)) + '\n'
+            self.log('Path quadrant result (#/full, $/half, -/empty): \n' + s.rstrip(), 0)
 
     def bake_background_texture(self):
         """
         Replicates the background tile to the required size of the frame.
+        Outputs result to self.textures.full_bg
         """
         # get frame size
         fw, fh = self.frame.get_size()
@@ -279,14 +380,30 @@ class Game:
 
         self.textures.full_bg = bg
 
+    def cell_from_screenspace(self, screenspace_coords: tuple):
+        """
+        Helper function to convert from screenspace coordinates to tile row and column.
+        Calculations based on texture base tile size; no boundary checking is performed.
+
+        Parameters:
+            screenspace_coords (Tuple[float, float]): The X and Y screeenspace coordinates of the probe location.
+
+        Returns:
+            Tuple[int, int]: Array containing the X and Y values of the corresponding tile coordinate.
+        """
+        return tuple(
+            map(
+                lambda n: int(n * (1 / self.textures.base_tile_size)),
+                screenspace_coords
+            )
+        )
 
     def update_path(self):
         """
         Alter the tile array to include the path of the player relative to their position.
         """
         # Calculate the cell position of the player by using int rounding, this returns cell coords in the tile array
-        player_cell_x = int(self.objects[0].globalRect.centerx * (1 / self.textures.base_tile_size))
-        player_cell_y = int(self.objects[0].globalRect.centery * (1 / self.textures.base_tile_size))
+        player_cell_x, player_cell_y = self.cell_from_screenspace(self.player.globalRect.center)
 
         # Now to set up the area around the player, we can just replicate the pregenerated quarter 4 times:
 
@@ -317,9 +434,9 @@ class Game:
                 for y, x in quads:
                     if min(x, y) > -1 and x < tgw and y < tgh:
                         if qc == 2 and (  # is the cell about to be drawn a half-cell?
-                            self.tile_grid[y][x] == 1  # is the tile at that position blank?
+                                self.tile_grid[y][x] == 1  # is the tile at that position blank?
                                 or
-                            y > player_cell_y  # is the position of the half below the player coordinate?
+                                y > player_cell_y  # is the position of the half below the player coordinate?
                         ):
                             continue  # do not draw that half-cell
 
@@ -327,13 +444,13 @@ class Game:
                         self.tile_grid[y][x] = qc
                     quad += 1
 
-
-    def draw_background(self):
+    def draw_tilemap(self):
         """
-        Update and render the tilemap to the screen.
+        Render the tilemap to the screen.
         This function takes care of:
             - Drawing the static texture for the background
             - Drawing the tilemap to the screen
+        Does not update the player's path. See method `update_path` for that functionality.
         """
 
         # draw the background grid
@@ -345,26 +462,34 @@ class Game:
             for cx, c in enumerate(r):
                 if c == 0:
                     continue  # skip drawing this
+                # get corresponding texture
                 tex = self.textures.tile_mappings[c]
                 # screenspace position
                 ss_pos = (cx * self.textures.base_tile_size, cy * self.textures.base_tile_size)
                 self.frame.blit(tex, ss_pos)
 
-    def screen_update(self):
+    def frame_to_screen(self):
         """
-        Update all game objects, draw them to the screen and refresh it.
-        Gets called every frame, so make it fast.
+        Takes care of what everything looks like outside the frame window.
+        Assumes everything inside the frame is ready to go.
+        Refreshes the screen; the final draw call per frame.
         """
-        self.update_path()
-        self.draw_background()
-
-        for game_object in self.objects:
-            game_object.update()
-
         self.screen.fill(0x23272A)
-
         self.screen.blit(self.frame, (10, 10))
         pygame.display.update()
+
+    def full_update(self):
+        """
+        Update all game objects, draw them to the screen call frame_to_screen.
+        Gets called every frame, so make it fast.
+        """
+        self.draw_tilemap()
+
+        for game_object in sorted(self.objects, key=lambda x: x.update_priority):
+            game_object.update()
+
+        self.update_path()
+        self.frame_to_screen()
 
     def game_quit(self, e):
         """Event callback method to quit the game. """
@@ -411,6 +536,7 @@ class GameObject(pygame.sprite.Sprite):
         :param image: sprite
         """
         super(GameObject, self).__init__()
+        self.update_priority = 100  # object update priority, higher = sooner
 
         self.parent = parent
         self.image = image
@@ -425,12 +551,6 @@ class GameObject(pygame.sprite.Sprite):
             self.rect.w, self.rect.h
         )
 
-    @property
-    def w(self): return self.rect.w
-
-    @property
-    def h(self): return self.rect.h
-
     def update(self):
         """
         Dynamic method to update the state/position/whatever you want of the game object.
@@ -442,22 +562,25 @@ class GameObject(pygame.sprite.Sprite):
     def draw(self, surface=None):
         """
         Rotates the game object's sprite to the appropriate angle around its center,
-        then blits it to the surface specified.
-        If no surface is specified, the parent's display object is used.
+        then blits it to the surface specified.  If no surface is specified, the parent's
+        display object is used.
+
+        Parameters:
+            surface (Surface/None): the surface to draw sprite image on
         """
 
         if surface is None:
             surface = self.parent.frame
 
-        if self.angle != 0: # skip the expensive calculation below if there is no rotation
+        if self.angle != 0:  # use the expensive calculation below only if there is any actual rotation
             # some rotation is happening, offset calculation is required
             img_w, img_h = self.image.get_size()
 
             bounding_box = [
-                pygame.math.Vector2(0, 0),  # top left
-                pygame.math.Vector2(img_w, 0),  # top right
-                pygame.math.Vector2(img_w, -img_h),  # bottom right
-                pygame.math.Vector2(0, -img_h)  # bottom left
+                Vector2(0, 0),  # top left
+                Vector2(img_w, 0),  # top right
+                Vector2(img_w, -img_h),  # bottom right
+                Vector2(0, -img_h)  # bottom left
             ]
 
             # rotate all vectors to match our rotation
@@ -470,7 +593,7 @@ class GameObject(pygame.sprite.Sprite):
             max_y = max(bounding_box, key=lambda vec: vec[1])[1]
 
             # get center of image
-            center = pygame.math.Vector2(
+            center = Vector2(
                 (img_w * 0.5),  # TODO: center offset, also do globalRect
                 -(img_h * 0.5)  # pygame vectors are upside down, so this is negative
             )
@@ -482,7 +605,7 @@ class GameObject(pygame.sprite.Sprite):
                 self.y - max_y + pivot_offset[1]
             )
 
-            img = pygame.transform.rotate(self.image, self.angle) # rotate image
+            img = pygame.transform.rotate(self.image, self.angle)  # rotate image
         else:
             # the angle is 0, forget all of the expensive calculations above
             img = self.image
@@ -498,9 +621,7 @@ class GameObject(pygame.sprite.Sprite):
         surface.blit(img, pos)  # draw to the screen at the proper position
 
     def log(self, *args):
-        """
-        link to parent's log function for ease of access
-        """
+        """Binding to parent's log function for ease of access."""
         self.parent.log(*args)
 
 
@@ -513,8 +634,16 @@ class Player(GameObject):
     def __init__(self, *args, **kwargs):
         super(Player, self).__init__(*args, **kwargs)
 
-        self.speed = 0  # speed of the player, used in update()
+        self.speed = 5  # speed of the player, used in update()
         self.turnspeed = 5
+
+        # these probes
+        self.path_probes = [
+            (30, 20),  # front right
+            (30, -20),  # front left
+        ]
+
+        self.movement_allowed = True
 
         self.key_up = pygame.K_w
         self.key_down = pygame.K_s
@@ -528,40 +657,107 @@ class Player(GameObject):
         attributes.
         """
 
-        if self.key_right in self.parent.keys_down:
-            self.angle -= self.turnspeed
-        if self.key_left in self.parent.keys_down:
-            self.angle += self.turnspeed
-        if self.key_down in self.parent.keys_down and self.speed >= 0.1:
-            self.speed -= 0.1
-        if self.key_up in self.parent.keys_down:
-            self.speed += 0.1
+        if self.movement_allowed:  # only run this code if movement is allowed, pointless otherwise
+            # alter angle based on which keys are pressed
+            if self.key_right in self.parent.keys_down:
+                self.angle -= self.turnspeed
+            if self.key_left in self.parent.keys_down:
+                self.angle += self.turnspeed
+            """
+            IF YOU EVER NEED CONTROLLABLE SPEED AGAIN...
+            
+            if self.key_down in self.parent.keys_down and self.speed >= 0.1:
+                self.speed -= 0.1
+            if self.key_up in self.parent.keys_down:
+                self.speed += 0.1
+                
+            """
 
-        self.speed = round(self.speed, 3)
+            # round the speed off, floating points are annoying
+            self.speed = round(self.speed, 3)
+            # save time calling the Surface method
+            frame_w, frame_h = self.parent.frame.get_size()
+            # is the player's speed reduced as a result of getting stuck?
+            is_slowed_down = False
 
-        sx = math.cos(math.radians(-self.angle)) * self.speed
-        sy = math.sin(math.radians(-self.angle)) * self.speed
+            # perform check for each probe
+            for probe in self.path_probes:
+                # convert local probe point offsets to global coordinates, and get their cell row/column
+                global_vector, cell = self.offset_point(probe)
+
+                try:
+                    # check tile at the probe's location
+                    at_probe = self.parent.tile_grid[cell[1]][cell[0]]
+                except IndexError:
+                    # that coordinate is out of bounds (eg. probe is clipping out of frame)
+                    pass
+                else:
+                    # successfully got tile at cell
+                    if at_probe == 1:
+                        # the tile there is an empty tile, cowabunga it is
+                        is_slowed_down = True
+
+                # TODO: remove this
+                pygame.draw.circle(self.parent.frame, 0xff0000, tuple(map(int, global_vector)), 10)
+
+            # calculate the true speed based on slowdown, use self.speed if no slowdown
+            real_speed = (self.speed / 2) if is_slowed_down else self.speed
+
+            # calculate step movement every frame
+            step_x = math.cos(math.radians(-self.angle)) * real_speed
+            step_y = math.sin(math.radians(-self.angle)) * real_speed
+
+            # check if movement is valid, and it it is, go for it
+            if frame_w > self.globalRect.center[0] + step_x > 0:
+                self.x += step_x
+            if frame_h > self.globalRect.center[1] + step_y > 0:
+                self.y += step_y
+
+        # render to the scene
         self.draw()
 
-        if self.parent.frame.get_width() > self.globalRect.center[0] + sx > 0:
-            self.x += sx
-        if self.parent.frame.get_height() > self.globalRect.center[1] + sy > 0:
-            self.y += sy
+    def offset_point(self, probe: tuple):
+        """
+        Converts local offset coordinates to global ones, relative to player coordinates.
+        Also returns the cell index of that coordinate set using `cell_from_screenspace`.
+
+        Parameters:
+            probe (Tuple(float, float): The offset, local coordinates. Assumes 0,0 is pivot.
+
+        Returns:
+            Tuple(Vector2, Tuple(int, int)) : Pair of the screenspace coordinate and cell index.
+        """
+        global_vector = Vector2(probe).rotate(-self.angle) + self.globalRect.center
+        cell = self.parent.cell_from_screenspace(global_vector)
+        return global_vector, cell
 
 
 class Enemy(GameObject):
+    """
+    Nasty Gustav, follows you around and makes your lawn mowing adventure hell.
+    His AI is pretty simple: he makes a B-line towards you until he reaches within kicking distance,
+    at which point he will try to kick you into the stratosphere.
+
+    Properties:
+        speed
+    """
     def __init__(self, *args, **kwargs):
         super(Enemy, self).__init__(*args, **kwargs)
-        self.speed = 3
-        self.target = None
 
+        self.update_priority = 90  # lower than player by 10
+        self.speed = 3  # chasing speed, for reference, the player's value is 5
+        self.target = None  # the target to chase, this is set after initialization
+        # instead of heading for the target's center, where should the enemy head for?
         self.hunt_offset = (self.rect.centerx, self.rect.centery + 40)
+        # when enemy will try to kick the lawnmower
+        self.kick_distance = 40
 
     def update(self):
         """
         This function handles the update of the Enemy AI. The `target` parameter must be set to a valid instance
         of GameObject (usually the player).
-        The enemy AI is very simple. It just tries to approach the player linearly, at a constant pace.
+
+        Called every frame.
         """
 
         if self.target is not None:  # skip calculating the movement if there is no set target
@@ -572,12 +768,17 @@ class Enemy(GameObject):
             relative_x = target_x - (self.x + self.hunt_offset[0])
             relative_y = target_y - (self.y + self.hunt_offset[1])
 
-            # steps required to go to pos
-            steps_required = max(abs(relative_x), abs(relative_y))
+            if int(relative_y - 20) > 0:
+                self.update_priority = 90
+            else:
+                self.update_priority = 110
 
-            if steps_required != 0:
-                step_dist_x = (relative_x / steps_required) * self.speed  # horizontal step
-                step_dist_y = (relative_y / steps_required) * self.speed  # vertical step
+            # furthest axis
+            furthest_distance = max(abs(relative_x), abs(relative_y))
+
+            if furthest_distance > self.kick_distance:
+                step_dist_x = (relative_x / furthest_distance) * self.speed  # horizontal step
+                step_dist_y = (relative_y / furthest_distance) * self.speed  # vertical step
 
                 # calculate if the player can still move smoothly
                 if abs(int(relative_x)) >= self.speed:
@@ -594,31 +795,39 @@ class Enemy(GameObject):
                     self.y += step_dist_y
                 else:
                     self.y = target_y - self.hunt_offset[1]
+            else:
+                self.log('[ENEMY AI] *kick*', 0)
         # draw to the screen, regardless of whether any movement happened
         self.draw()
 
 
 if __name__ == '__main__':
+    # this runs only when the file is the main one
     if USE_ADVANCED_LOGGING:
-        _logger = logging.Logger('game')
-        _logger.setLevel(logging.DEBUG if ADVANCED_LOGGING_SHOW_DEBUG else logging.INFO)
+        # set up advanced logging with levels & debug filtering
+        _logger = logging.Logger('game')  # initialize logger object
+        _logger.setLevel(logging.DEBUG if ADVANCED_LOGGING_SHOW_DEBUG else logging.INFO)  # set debug filter
 
-        _stdhandler = logging.StreamHandler()
-        _stdhandler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] : %(message)s', '%d/%m/%Y %H:%M:%S'))
-        _logger.addHandler(_stdhandler)
+        _stdhandler = logging.StreamHandler()  # create handler object to pipe to console
+        _stdhandler.setFormatter(  # set the logger message & time format
+            logging.Formatter('%(asctime)s [%(levelname)s] : %(message)s', '%d/%m/%Y %H:%M:%S')
+        )
+        _logger.addHandler(_stdhandler)  # add the console handler to the logger
     else:
-        _logger = None
+        _logger = None  # tell the game to use fallback logging
 
-    game = Game(logger=_logger)
+    game = Game(logger=_logger)  # initialize game
     game.log('Starting game...')
     try:
-        rcode = game.run()
+        rcode = game.run()  # run the game forever, then get return code
     except Exception as e:
-        game.log(str(e), 3)
+        # an error has occurred
+        game.log(str(e), 3)  # log the error
 
-        if ADVANCED_LOGGING_SHOW_DEBUG:
-            game.log(f'Showing traceback, disable DEBUG to hide.\n\n{"-"*9} BEGIN DEBUG TRACEBACK {"-"*9}\n', 0)
+        if ADVANCED_LOGGING_SHOW_DEBUG:  # show the traceback if enabled, for convenience purposes
+            game.log(f'Showing traceback, disable DEBUG to hide.\n\n{"-" * 9} BEGIN DEBUG TRACEBACK {"-" * 9}\n', 0)
             traceback.print_exception(type(e), e, e.__traceback__)
 else:
+    # this file was imported for some reason, this shouldn't really happen, so:
     print('This file does nothing unless explicitly executed.')
     input('[Press Enter to exit.]')
