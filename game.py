@@ -85,6 +85,23 @@ def weight_point_in_circle(
     # outside of any thresholds
     return 0  # empty tile
 
+def cell_from_screenspace(screenspace_coords: tuple, tile_size: int):
+    """
+    Helper function to convert from screenspace coordinates to tile row and column.
+    Calculations based on texture base tile size; no boundary checking is performed.
+
+    Parameters:
+        screenspace_coords (Tuple[float, float]): The X and Y screeenspace coordinates of the probe location.
+
+    Returns:
+        Tuple[int, int]: Array containing the X and Y values of the corresponding tile coordinate.
+    """
+    return tuple(
+        map(
+            lambda n: int(n * (1 / tile_size)),
+            screenspace_coords
+        )
+    )
 
 class Game:
     """
@@ -228,7 +245,7 @@ class Game:
 
             self.enemy = pygame.transform.scale(
                 pygame.image.load(
-                    os.path.join(RES_FOLDER, 'img', 'enemy', '0.png')
+                    os.path.join(RES_FOLDER, 'img', 'enemy', 'orig.png')
                 ), (100, 200)
             )
 
@@ -311,7 +328,8 @@ class Game:
         self.log(f'{len(self.objects):,} objects active')
         try:
             while self.running:
-                self.full_update()  # update everything
+                self.tick_objects()  # update everything
+                self.full_draw()
                 self.process_events(pygame.event.get())  # process event queue
                 self.screen_clock.tick(60)  # cAlm tHe TiDe
         except Exception as e:
@@ -380,30 +398,12 @@ class Game:
 
         self.textures.full_bg = bg
 
-    def cell_from_screenspace(self, screenspace_coords: tuple):
-        """
-        Helper function to convert from screenspace coordinates to tile row and column.
-        Calculations based on texture base tile size; no boundary checking is performed.
-
-        Parameters:
-            screenspace_coords (Tuple[float, float]): The X and Y screeenspace coordinates of the probe location.
-
-        Returns:
-            Tuple[int, int]: Array containing the X and Y values of the corresponding tile coordinate.
-        """
-        return tuple(
-            map(
-                lambda n: int(n * (1 / self.textures.base_tile_size)),
-                screenspace_coords
-            )
-        )
-
     def update_path(self):
         """
         Alter the tile array to include the path of the player relative to their position.
         """
         # Calculate the cell position of the player by using int rounding, this returns cell coords in the tile array
-        player_cell_x, player_cell_y = self.cell_from_screenspace(self.player.globalRect.center)
+        player_cell_x, player_cell_y = cell_from_screenspace(self.player.globalRect.center, self.textures.base_tile_size)
 
         # Now to set up the area around the player, we can just replicate the pregenerated quarter 4 times:
 
@@ -468,7 +468,20 @@ class Game:
                 ss_pos = (cx * self.textures.base_tile_size, cy * self.textures.base_tile_size)
                 self.frame.blit(tex, ss_pos)
 
-    def frame_to_screen(self):
+    def tick_objects(self):
+        """
+        Update all game objects, draw them to the screen call frame_to_screen.
+        Gets called every frame, so make it fast.
+        """
+        for game_object in self.objects:
+            game_object.update()
+        self.update_path()
+
+    def draw_objects(self):
+        for game_object in sorted(self.objects, key=lambda x: x.draw_priority):
+            game_object.draw()
+
+    def draw_frame_to_screen(self):
         """
         Takes care of what everything looks like outside the frame window.
         Assumes everything inside the frame is ready to go.
@@ -478,18 +491,10 @@ class Game:
         self.screen.blit(self.frame, (10, 10))
         pygame.display.update()
 
-    def full_update(self):
-        """
-        Update all game objects, draw them to the screen call frame_to_screen.
-        Gets called every frame, so make it fast.
-        """
+    def full_draw(self):
         self.draw_tilemap()
-
-        for game_object in sorted(self.objects, key=lambda x: x.update_priority):
-            game_object.update()
-
-        self.update_path()
-        self.frame_to_screen()
+        self.draw_objects()
+        self.draw_frame_to_screen()
 
     def game_quit(self, e):
         """Event callback method to quit the game. """
@@ -524,6 +529,24 @@ class Game:
             # if the cycle is not skipped here, say that we missed the event on the DEBUG level
             # self.log(f'Uncaught event {e.type}', 0)
 
+    def kick_player(self):
+        v_player = Vector2(self.player.x, self.player.y)
+        dist_to_right = int(self.frame.get_width() - self.player.x)
+        dist_to_bottom = int(self.frame.get_height() - self.player.y)
+
+        end_pos = v_player + Vector2(
+            random.randint(int(-self.player.x) + 100, dist_to_right - 100),
+            random.randint(int(-self.player.y) + 100, dist_to_bottom - 100))
+
+        for i in range(50):
+            self.player.x, self.player.y = v_player.slerp(end_pos, i/50)
+            self.player.angle += 7.2  # 360 / 50
+            self.full_draw()
+            pygame.draw.circle(self.frame, 0x0000ff, tuple(map(int, (self.player.x, self.player.y))), 5)
+            pygame.draw.circle(self.frame, 0xff0000, tuple(map(int, end_pos)), 5)
+            self.screen_clock.tick(60)
+
+
 
 class GameObject(pygame.sprite.Sprite):
     def __init__(self, parent: Game, start_x=0, start_y=0, start_angle=0, image=None):
@@ -536,7 +559,7 @@ class GameObject(pygame.sprite.Sprite):
         :param image: sprite
         """
         super(GameObject, self).__init__()
-        self.update_priority = 100  # object update priority, higher = sooner
+        self.draw_priority = 100  # object update priority, higher = sooner
 
         self.parent = parent
         self.image = image
@@ -554,7 +577,7 @@ class GameObject(pygame.sprite.Sprite):
     def update(self):
         """
         Dynamic method to update the state/position/whatever you want of the game object.
-        Gets called every frame, so make it fast.
+        Gets called every frame, so makstart_anglee it fast.
         By default, just draws the sprite to the screen.
         """
         self.draw()
@@ -728,7 +751,7 @@ class Player(GameObject):
             Tuple(Vector2, Tuple(int, int)) : Pair of the screenspace coordinate and cell index.
         """
         global_vector = Vector2(probe).rotate(-self.angle) + self.globalRect.center
-        cell = self.parent.cell_from_screenspace(global_vector)
+        cell = cell_from_screenspace(global_vector, self.parent.textures.base_tile_size)
         return global_vector, cell
 
 
@@ -744,7 +767,7 @@ class Enemy(GameObject):
     def __init__(self, *args, **kwargs):
         super(Enemy, self).__init__(*args, **kwargs)
 
-        self.update_priority = 90  # lower than player by 10
+        self.draw_priority = 90  # lower than player by 10
         self.speed = 3  # chasing speed, for reference, the player's value is 5
         self.target = None  # the target to chase, this is set after initialization
         # instead of heading for the target's center, where should the enemy head for?
@@ -769,9 +792,9 @@ class Enemy(GameObject):
             relative_y = target_y - (self.y + self.hunt_offset[1])
 
             if int(relative_y - 20) > 0:
-                self.update_priority = 90
+                self.draw_priority = 90
             else:
-                self.update_priority = 110
+                self.draw_priority = 110
 
             # furthest axis
             furthest_distance = max(abs(relative_x), abs(relative_y))
@@ -780,13 +803,13 @@ class Enemy(GameObject):
                 step_dist_x = (relative_x / furthest_distance) * self.speed  # horizontal step
                 step_dist_y = (relative_y / furthest_distance) * self.speed  # vertical step
 
-                # calculate if the player can still move smoothly
+                # calculate if the enemy can still move smoothly
                 if abs(int(relative_x)) >= self.speed:
                     # move one step towards target x
                     self.x += step_dist_x
                 else:
-                    # the player is too close to the mouse pointer to have a reliable
-                    # step calculation because of framerate, just snap to pointer
+                    # the enemy is too close to the player to have a reliable
+                    # step calculation because of framerate, just snap to position
                     # this runs on the last frame of the movement
                     self.x = target_x - self.hunt_offset[0]
 
@@ -796,7 +819,7 @@ class Enemy(GameObject):
                 else:
                     self.y = target_y - self.hunt_offset[1]
             else:
-                self.log('[ENEMY AI] *kick*', 0)
+                self.parent.kick_player()
         # draw to the screen, regardless of whether any movement happened
         self.draw()
 
