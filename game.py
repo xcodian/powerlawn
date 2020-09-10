@@ -243,11 +243,23 @@ class Game:
             # replicated background that should fill the screen, see Game.bake_background_texture
             self.full_bg = None
 
-            self.enemy = pygame.transform.scale(
-                pygame.image.load(
-                    os.path.join(RES_FOLDER, 'img', 'enemy', 'orig.png')
-                ), (100, 200)
-            )
+            self.enemy_kick = [
+                pygame.transform.scale(
+                    pygame.image.load(
+                        os.path.join(RES_FOLDER, 'img', 'enemy', f'kick{i}.png')
+                    ), (100, 200)
+                )
+                for i in (0, 1)
+            ]
+
+            self.enemy_cycle = [
+                pygame.transform.scale(
+                    pygame.image.load(
+                        os.path.join(RES_FOLDER, 'img', 'enemy', f'run{i}.png')
+                    ), (100, 200)
+                )
+                for i in (0, 1, 2, 1)
+            ]
 
     class Fonts:
         def __init__(self):
@@ -304,7 +316,7 @@ class Game:
         self.objects = [
             # slot 0 should always be the main player
             Player(parent=self, start_x=0, start_y=0, start_angle=0, image=self.textures.player),
-            Enemy(parent=self, start_x=500, start_y=500, start_angle=0, image=self.textures.enemy)
+            Enemy(parent=self, start_x=500, start_y=500, start_angle=0, image=self.textures.enemy_kick[0])
         ]
 
         # set enemy target
@@ -534,9 +546,13 @@ class Game:
         dist_to_right = int(self.frame.get_width() - self.player.x)
         dist_to_bottom = int(self.frame.get_height() - self.player.y)
 
-        end_pos = v_player + Vector2(
+        offset = Vector2(
             random.randint(int(-self.player.x) + 100, dist_to_right - 100),
-            random.randint(int(-self.player.y) + 100, dist_to_bottom - 100))
+            random.randint(int(-self.player.y) + 100, dist_to_bottom - 100)
+        )
+
+        self.objects[1].horizontal_flip = not (offset.x < 0)
+        end_pos = v_player + offset
 
         for i in range(50):
             self.player.x, self.player.y = v_player.slerp(end_pos, i/50)
@@ -578,26 +594,30 @@ class GameObject(pygame.sprite.Sprite):
         """
         Dynamic method to update the state/position/whatever you want of the game object.
         Gets called every frame, so makstart_anglee it fast.
-        By default, just draws the sprite to the screen.
+        By default, just does nothing.
         """
-        self.draw()
+        pass
 
-    def draw(self, surface=None):
+    def draw(self, surface=None, image=None):
         """
         Rotates the game object's sprite to the appropriate angle around its center,
         then blits it to the surface specified.  If no surface is specified, the parent's
         display object is used.
 
         Parameters:
-            surface (Surface/None): the surface to draw sprite image on
+            surface (Optional[Surface]): the surface to draw sprite image on
+            image (Optional[Surface]): the surface to draw to the screen instead of self.image
         """
 
         if surface is None:
             surface = self.parent.frame
 
+        if image is None:
+            image = self.image
+
         if self.angle != 0:  # use the expensive calculation below only if there is any actual rotation
             # some rotation is happening, offset calculation is required
-            img_w, img_h = self.image.get_size()
+            img_w, img_h = image.get_size()
 
             bounding_box = [
                 Vector2(0, 0),  # top left
@@ -628,10 +648,10 @@ class GameObject(pygame.sprite.Sprite):
                 self.y - max_y + pivot_offset[1]
             )
 
-            img = pygame.transform.rotate(self.image, self.angle)  # rotate image
+            img = pygame.transform.rotate(image, self.angle)  # rotate image
         else:
             # the angle is 0, forget all of the expensive calculations above
-            img = self.image
+            img = image
             pos = (self.x, self.y)
 
         self.rect = img.get_rect()  # update internal rectangle
@@ -662,8 +682,10 @@ class Player(GameObject):
 
         # these probes
         self.path_probes = [
-            (30, 20),  # front right
-            (30, -20),  # front left
+            #(30, 20),  # front right
+            #(30, -20),  # front left
+            # front middle
+            (0, 20)
         ]
 
         self.movement_allowed = True
@@ -736,9 +758,6 @@ class Player(GameObject):
             if frame_h > self.globalRect.center[1] + step_y > 0:
                 self.y += step_y
 
-        # render to the scene
-        self.draw()
-
     def offset_point(self, probe: tuple):
         """
         Converts local offset coordinates to global ones, relative to player coordinates.
@@ -768,12 +787,24 @@ class Enemy(GameObject):
         super(Enemy, self).__init__(*args, **kwargs)
 
         self.draw_priority = 90  # lower than player by 10
-        self.speed = 3  # chasing speed, for reference, the player's value is 5
+        self.speed = 4  # chasing speed, for reference, the player's value is 5
         self.target = None  # the target to chase, this is set after initialization
         # instead of heading for the target's center, where should the enemy head for?
         self.hunt_offset = (self.rect.centerx, self.rect.centery + 40)
         # when enemy will try to kick the lawnmower
         self.kick_distance = 40
+        # animation frame
+        self.anim = 0
+        # animate every X frames
+        self.animate_every = 10
+        # flip image horizontally?
+        self.horizontal_flip = False
+        # currently kicking?
+        self.kicking = False
+        # frames since charge
+        self.kick_charge = 0
+        # frames required to complete charge
+        self.charge_duration = 15
 
     def update(self):
         """
@@ -783,7 +814,7 @@ class Enemy(GameObject):
         Called every frame.
         """
 
-        if self.target is not None:  # skip calculating the movement if there is no set target
+        if self.target is not None and not self.kicking:  # skip calculating the movement if there is no set target
             # get mouse pos
             target_x, target_y = self.target.globalRect.center
 
@@ -796,10 +827,12 @@ class Enemy(GameObject):
             else:
                 self.draw_priority = 110
 
+            self.horizontal_flip = relative_x > 0
+
             # furthest axis
             furthest_distance = max(abs(relative_x), abs(relative_y))
 
-            if furthest_distance > self.kick_distance:
+            if furthest_distance > self.kick_distance-10:
                 step_dist_x = (relative_x / furthest_distance) * self.speed  # horizontal step
                 step_dist_y = (relative_y / furthest_distance) * self.speed  # vertical step
 
@@ -819,9 +852,47 @@ class Enemy(GameObject):
                 else:
                     self.y = target_y - self.hunt_offset[1]
             else:
-                self.parent.kick_player()
-        # draw to the screen, regardless of whether any movement happened
-        self.draw()
+                self.kick_charge = 0 # start charge loop
+                self.kicking = True
+                print('kick charge start...')
+
+        if self.kick_charge > -1:
+            if self.kick_charge < self.charge_duration:
+                self.kick_charge += 1
+            else:
+                self.kick_charge = -1
+
+                relative_x = self.target.globalRect.centerx - (self.x + self.hunt_offset[0])
+                relative_y = self.target.globalRect.centery - (self.y + self.hunt_offset[1])
+
+                if max(abs(relative_x), abs(relative_y)) <= self.kick_distance * 2:
+                    print('still in range, kicking!')
+                    self.parent.kick_player()
+                else:
+                    print('called off, not in distance.')
+
+                self.kicking = False
+
+    def draw(self, *args, **kwargs):
+        if not self.kicking:
+            if self.anim % self.animate_every == 0:
+                self.image = self.parent.textures.enemy_cycle[int(self.anim / self.animate_every)]
+
+            if self.anim+1 < len(self.parent.textures.enemy_cycle) * self.animate_every:
+                self.anim += 1
+            else:
+                self.anim = 0
+        elif self.kick_charge > -1:
+            self.image = self.parent.textures.enemy_kick[0]
+        else:
+            self.image = self.parent.textures.enemy_kick[1]
+
+        if not self.horizontal_flip:
+            super(Enemy, self).draw(
+                *args, image=pygame.transform.flip(self.image, True, False)
+            )
+            return
+        super(Enemy, self).draw(*args)
 
 
 if __name__ == '__main__':
