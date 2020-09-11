@@ -66,7 +66,7 @@ def weight_point_in_circle(
             1 if full tile
             2 if half tile
     """
-    diff_x, diff_y = map(lambda x, y: abs(x-y), center, point)  # subtract point from center then abs for both x and y
+    diff_x, diff_y = map(lambda x, y: abs(x - y), center, point)  # subtract point from center then abs for both x and y
 
     if (diff_y > radius) or (diff_x > radius):
         return 0  # eliminate any obviously out of bounds tiles
@@ -85,6 +85,7 @@ def weight_point_in_circle(
     # outside of any thresholds
     return 0  # empty tile
 
+
 def cell_from_screenspace(screenspace_coords: tuple, tile_size: int):
     """
     Helper function to convert from screenspace coordinates to tile row and column.
@@ -102,6 +103,7 @@ def cell_from_screenspace(screenspace_coords: tuple, tile_size: int):
             screenspace_coords
         )
     )
+
 
 class Game:
     """
@@ -199,8 +201,26 @@ class Game:
         self.tile_grid = []
         # player trail radius
         self.path_radius = 2
-        # player quadrant
+        # player path quadrant
         self.path_template = []
+
+        # total power used so far
+        self.power_used = 0
+        # power consumption every frame
+        self.current_power_consumption = 0
+
+        # cost per watt
+        self.cost = 0.05
+        # money before the game ends and you exaust your money supply
+        self.money_limit = 5000
+
+        # W if slowed
+        self.slow_power_consumption = 2400
+        # W if not slowed
+        self.normal_power_consumption = 800
+
+        # game start
+        self.started = -1
 
     class Textures:
         def __init__(self):
@@ -261,11 +281,22 @@ class Game:
                 for i in (0, 1, 2, 1)
             ]
 
+            self.wallet_icon = pygame.image.load(
+                os.path.join(RES_FOLDER, 'img', 'wallet.png')
+            )
+
     class Fonts:
         def __init__(self):
-            self.comic_sans = pygame.font.Font(
-                'res'
+            path_arcade = os.path.join(
+                RES_FOLDER, 'fonts', 'arcade.ttf'
             )
+            self.arcade_50 = pygame.font.Font(
+                path_arcade, 50
+            )
+            self.arcade_25 = pygame.font.Font(
+                path_arcade, 25
+            )
+            self.arcade_50: pygame.font.Font
 
     def log(self, msg: str, level: int = 1):
         """
@@ -303,6 +334,7 @@ class Game:
 
         self.log('Loading fonts...')
         pygame.font.init()
+        self.fonts = self.Fonts()
 
         # init the screen and prepare it
         self.log(f'Initializing screen ({SCREEN_W}x{SCREEN_H})')
@@ -315,7 +347,7 @@ class Game:
         self.log(f'Creating objects...')
         self.objects = [
             # slot 0 should always be the main player
-            Player(parent=self, start_x=0, start_y=0, start_angle=0, image=self.textures.player),
+            Player(parent=self, start_x=-45, start_y=0, start_angle=0, image=self.textures.player),
             Enemy(parent=self, start_x=500, start_y=500, start_angle=0, image=self.textures.enemy_kick[0])
         ]
 
@@ -415,7 +447,8 @@ class Game:
         Alter the tile array to include the path of the player relative to their position.
         """
         # Calculate the cell position of the player by using int rounding, this returns cell coords in the tile array
-        player_cell_x, player_cell_y = cell_from_screenspace(self.player.globalRect.center, self.textures.base_tile_size)
+        player_cell_x, player_cell_y = cell_from_screenspace(self.player.globalRect.center,
+                                                             self.textures.base_tile_size)
 
         # Now to set up the area around the player, we can just replicate the pregenerated quarter 4 times:
 
@@ -493,20 +526,89 @@ class Game:
         for game_object in sorted(self.objects, key=lambda x: x.draw_priority):
             game_object.draw()
 
-    def draw_frame_to_screen(self):
+    def get_mown_percentage(self):
+        mown = 0
+        for r in self.tile_grid:
+            for c in r:
+                if c:
+                    mown += 1
+        return (mown / (70 * 70)) * 100, mown
+
+    def draw_ui_and_frame(self):
         """
         Takes care of what everything looks like outside the frame window.
         Assumes everything inside the frame is ready to go.
         Refreshes the screen; the final draw call per frame.
         """
-        self.screen.fill(0x23272A)
+        self.screen.fill(0x262626)
+
+        percent, mown = self.get_mown_percentage()
+
+        self.screen.blit(
+            self.fonts.arcade_25.render(f'Lawn Stats', False, (142, 142, 142)),
+            (self.frame.get_width() + 20, 10)
+        )
+
+        self.screen.blit(
+            self.fonts.arcade_50.render(f'{format(percent, ".2f")}%', False, (255, 255, 255)),
+            (self.frame.get_width() + 20, 40)
+        )
+        self.screen.blit(
+            self.fonts.arcade_25.render(f'{mown} tiles mown', False, (255, 255, 255)),
+            (self.frame.get_width() + 20, 95)
+        )
+
+        # power usage
+        self.screen.blit(
+            self.fonts.arcade_25.render(f'Power Bills', False, (142, 142, 142)),
+            (self.frame.get_width() + 20, 150)
+        )
+        cost_font = self.fonts.arcade_50.render(f'${round(self.power_used * self.cost)}', False, (255, 255, 255))
+        self.screen.blit(
+            cost_font,
+            (self.frame.get_width() + 20, 180)
+        )
+
+        wattage_display = self.fonts.arcade_25.render(f'{self.power_used}W', False, (210, 210, 210))
+        usage_display = self.fonts.arcade_25.render(
+            f'+{self.current_power_consumption}',
+            False,
+            (111, 194, 52) if self.current_power_consumption == self.normal_power_consumption else (199, 84, 80)
+        )
+
+        usage_offset_y = 180 + cost_font.get_height() - (usage_display.get_height() + wattage_display.get_height())
+        usage_offset_x = self.frame.get_width() + 30 + cost_font.get_width()
+
+        self.screen.blit(
+            usage_display,
+            (usage_offset_x, usage_offset_y)
+        )
+
+        self.screen.blit(
+            wattage_display,
+            (usage_offset_x, usage_offset_y + usage_display.get_height())
+        )
+
+        self.screen.blit(self.textures.wallet_icon, (self.frame.get_width() + 30, 180 + cost_font.get_height()))
+
+        rectx = self.frame.get_width() + 88
+        recty = 188 + cost_font.get_height()
+
+        pygame.draw.rect(self.screen, (111, 194, 52), pygame.Rect(rectx, recty, 300, 32))
+
+        pygame.draw.rect(self.screen, (199, 84, 80), pygame.Rect(
+            rectx, recty,
+            int((self.power_used * self.cost) / self.money_limit * 300), # <- bar width
+            32
+        ))
+
         self.screen.blit(self.frame, (10, 10))
         pygame.display.update()
 
     def full_draw(self):
         self.draw_tilemap()
         self.draw_objects()
-        self.draw_frame_to_screen()
+        self.draw_ui_and_frame()
 
     def game_quit(self, e):
         """Event callback method to quit the game. """
@@ -555,13 +657,12 @@ class Game:
         end_pos = v_player + offset
 
         for i in range(50):
-            self.player.x, self.player.y = v_player.slerp(end_pos, i/50)
-            self.player.angle += 7.2  # 360 / 50
+            self.player.x, self.player.y = v_player.slerp(end_pos, i / 50)
+            self.player.angle += random.randint(5, 8)  # 360 / 50
             self.full_draw()
             pygame.draw.circle(self.frame, 0x0000ff, tuple(map(int, (self.player.x, self.player.y))), 5)
             pygame.draw.circle(self.frame, 0xff0000, tuple(map(int, end_pos)), 5)
             self.screen_clock.tick(60)
-
 
 
 class GameObject(pygame.sprite.Sprite):
@@ -678,14 +779,14 @@ class Player(GameObject):
         super(Player, self).__init__(*args, **kwargs)
 
         self.speed = 5  # speed of the player, used in update()
-        self.turnspeed = 5
+        self.turnspeed = 6
 
         # these probes
         self.path_probes = [
-            #(30, 20),  # front right
-            #(30, -20),  # front left
+            # (30, 20),  # front right
+            # (30, -20),  # front left
             # front middle
-            (0, 20)
+            (30, 0)
         ]
 
         self.movement_allowed = True
@@ -694,6 +795,8 @@ class Player(GameObject):
         self.key_down = pygame.K_s
         self.key_right = pygame.K_d
         self.key_left = pygame.K_a
+
+        self.key_space = pygame.K_SPACE
 
     def update(self):
         """
@@ -746,7 +849,13 @@ class Player(GameObject):
                 pygame.draw.circle(self.parent.frame, 0xff0000, tuple(map(int, global_vector)), 10)
 
             # calculate the true speed based on slowdown, use self.speed if no slowdown
-            real_speed = (self.speed / 2) if is_slowed_down else self.speed
+            if is_slowed_down:
+                real_speed = (self.speed / 2)
+                self.parent.current_power_consumption = self.parent.slow_power_consumption
+            else:
+                real_speed = self.speed
+                self.parent.current_power_consumption = self.parent.normal_power_consumption
+            self.parent.power_used += int(self.parent.current_power_consumption / 60)
 
             # calculate step movement every frame
             step_x = math.cos(math.radians(-self.angle)) * real_speed
@@ -783,6 +892,7 @@ class Enemy(GameObject):
     Properties:
         speed
     """
+
     def __init__(self, *args, **kwargs):
         super(Enemy, self).__init__(*args, **kwargs)
 
@@ -804,7 +914,7 @@ class Enemy(GameObject):
         # frames since charge
         self.kick_charge = 0
         # frames required to complete charge
-        self.charge_duration = 15
+        self.charge_duration = 17
 
     def update(self):
         """
@@ -832,7 +942,7 @@ class Enemy(GameObject):
             # furthest axis
             furthest_distance = max(abs(relative_x), abs(relative_y))
 
-            if furthest_distance > self.kick_distance-10:
+            if furthest_distance > self.kick_distance - 10:
                 step_dist_x = (relative_x / furthest_distance) * self.speed  # horizontal step
                 step_dist_y = (relative_y / furthest_distance) * self.speed  # vertical step
 
@@ -852,9 +962,8 @@ class Enemy(GameObject):
                 else:
                     self.y = target_y - self.hunt_offset[1]
             else:
-                self.kick_charge = 0 # start charge loop
+                self.kick_charge = 0  # start charge loop
                 self.kicking = True
-                print('kick charge start...')
 
         if self.kick_charge > -1:
             if self.kick_charge < self.charge_duration:
@@ -866,11 +975,7 @@ class Enemy(GameObject):
                 relative_y = self.target.globalRect.centery - (self.y + self.hunt_offset[1])
 
                 if max(abs(relative_x), abs(relative_y)) <= self.kick_distance * 2:
-                    print('still in range, kicking!')
                     self.parent.kick_player()
-                else:
-                    print('called off, not in distance.')
-
                 self.kicking = False
 
     def draw(self, *args, **kwargs):
@@ -878,7 +983,7 @@ class Enemy(GameObject):
             if self.anim % self.animate_every == 0:
                 self.image = self.parent.textures.enemy_cycle[int(self.anim / self.animate_every)]
 
-            if self.anim+1 < len(self.parent.textures.enemy_cycle) * self.animate_every:
+            if self.anim + 1 < len(self.parent.textures.enemy_cycle) * self.animate_every:
                 self.anim += 1
             else:
                 self.anim = 0
