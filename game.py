@@ -24,6 +24,8 @@ FRAME_H = 700
 # frame dimensions
 SCREEN_W = 1280
 SCREEN_H = 720
+# fixed framerate
+FRAMERATE = 60
 # resources folder
 RES_FOLDER = 'res'
 
@@ -199,6 +201,11 @@ class Game:
         self.fonts = None
         # background tile grid
         self.tile_grid = []
+
+        # tile grid size
+        self.tile_grid_w = 0
+        self.tile_grid_h = 0
+
         # player trail radius
         self.path_radius = 2
         # player path quadrant
@@ -206,21 +213,36 @@ class Game:
 
         # total power used so far
         self.power_used = 0
-        # power consumption every frame
-        self.current_power_consumption = 0
 
         # cost per watt
-        self.cost = 0.05
+        self.current_cost = 0.0005
+        # normal_cost
+        self.normal_cost = 0.0005
+        # powered up cost
+        self.powered_up_cost = -0.0005
+
         # money before the game ends and you exaust your money supply
         self.money_limit = 5000
+        # money currently spent
+        self.money = 0
 
         # W if slowed
         self.slow_power_consumption = 2400
         # W if not slowed
         self.normal_power_consumption = 800
+        # power consumption every frame
+        self.current_power_consumption = self.normal_power_consumption
 
-        # game start
-        self.started = -1
+        # frames rendered since the game has started
+        self.frames_since_game_start = 0
+        # last_powerup
+        self.last_powerup = 0
+
+        self.powerup_names = {
+            0: 'Swiftness',
+            1: 'Anti-Debt',
+            2: 'Human Zapper'
+        }
 
     class Textures:
         def __init__(self):
@@ -281,9 +303,25 @@ class Game:
                 for i in (0, 1, 2, 1)
             ]
 
+            self.enemy_stun = pygame.transform.scale(
+                pygame.image.load(
+                    os.path.join(RES_FOLDER, 'img', 'enemy', 'stun.png')
+                ), (100, 200)
+            )
+
             self.wallet_icon = pygame.image.load(
                 os.path.join(RES_FOLDER, 'img', 'wallet.png')
             )
+
+            self.powerups = (
+                pygame.image.load(os.path.join(RES_FOLDER, 'img', 'powerups', 'speed.png')),
+                pygame.image.load(os.path.join(RES_FOLDER, 'img', 'powerups', 'money.png')),
+                pygame.image.load(os.path.join(RES_FOLDER, 'img', 'powerups', 'stun.png')),
+            )
+
+            self.powerup_icons = [
+                pygame.transform.scale(i, (25, 25)) for i in self.powerups
+            ]
 
     class Fonts:
         def __init__(self):
@@ -356,7 +394,7 @@ class Game:
 
         # make the big tile array
         self.log('Baking initial tilemap...')
-        self.bake_tilemap()
+        self.bake_tile_grid()
 
         # make a quadrant of the player path
         self.log(f'Baking path quadrant...')
@@ -373,9 +411,13 @@ class Game:
         try:
             while self.running:
                 self.tick_objects()  # update everything
+                self.tick_powerups()
                 self.full_draw()
                 self.process_events(pygame.event.get())  # process event queue
-                self.screen_clock.tick(60)  # cAlm tHe TiDe
+                self.frames_since_game_start += 1
+                self.last_powerup += 1
+                self.try_spawn_powerup()
+                self.screen_clock.tick(FRAMERATE)  # cAlm tHe TiDe
         except Exception as e:
             self.log(str(e), 2)  # error :(
             traceback.print_exception(type(e), e, e.__traceback__)  # show in console
@@ -383,7 +425,7 @@ class Game:
         self.log('Game exited normally', 0)
         return 0
 
-    def bake_tilemap(self):
+    def bake_tile_grid(self):
         """
         Generates empty tile array the size of the screen.
         Its strucure is equrivalent to
@@ -395,10 +437,12 @@ class Game:
         Where each number represents the tile state - here, 0 is full tile.
         To reference any cell within it: tilemap[row][column]
         """
+        self.tile_grid_w = divmod(self.frame.get_width(), self.textures.base_tile_size)[0]
         for _ in range(0, self.frame.get_height(), self.textures.base_tile_size):
             self.tile_grid.append(
                 [0 for _ in range(0, self.frame.get_width(), self.textures.base_tile_size)]
             )
+            self.tile_grid_h += 1
 
     def bake_path_quadrant(self):
         """
@@ -418,7 +462,7 @@ class Game:
         if ADVANCED_LOGGING_SHOW_DEBUG:  # show what the quadrant looks like once baked
             s = ''
             for r in self.path_template:
-                s += (' ' * 30) + ''.join(map(lambda v: ['[-]', '[#]', '[$]'][v], r)) + '\n'
+                s += (' ' * 28) + ': ' + ''.join(map(lambda v: ['[-]', '[#]', '[$]'][v], r)) + '\n'
             self.log('Path quadrant result (#/full, $/half, -/empty): \n' + s.rstrip(), 0)
 
     def bake_background_texture(self):
@@ -461,7 +505,6 @@ class Game:
                     continue
 
                 # get tile grid width & height
-                tgw, tgh = len(self.tile_grid[0]), len(self.tile_grid)
 
                 right = player_cell_x + qx
                 left = player_cell_x - qx
@@ -477,7 +520,7 @@ class Game:
 
                 quad = 0
                 for y, x in quads:
-                    if min(x, y) > -1 and x < tgw and y < tgh:
+                    if min(x, y) > -1 and x < self.tile_grid_w and y < self.tile_grid_h:
                         if qc == 2 and (  # is the cell about to be drawn a half-cell?
                                 self.tile_grid[y][x] == 1  # is the tile at that position blank?
                                 or
@@ -518,8 +561,17 @@ class Game:
         Update all game objects, draw them to the screen call frame_to_screen.
         Gets called every frame, so make it fast.
         """
-        for game_object in self.objects:
+        to_cull = []
+        for idx, game_object in enumerate(self.objects):
             game_object.update()
+
+            if isinstance(game_object, Powerup):
+                if not game_object.active:
+                    to_cull.append(idx)
+
+        for idx in to_cull:
+            del self.objects[idx]
+
         self.update_path()
 
     def draw_objects(self):
@@ -563,7 +615,10 @@ class Game:
             self.fonts.arcade_25.render(f'Power Bills', False, (142, 142, 142)),
             (self.frame.get_width() + 20, 150)
         )
-        cost_font = self.fonts.arcade_50.render(f'${round(self.power_used * self.cost)}', False, (255, 255, 255))
+        cost_font = self.fonts.arcade_50.render(
+            f'${round(self.money)}', False,
+            (82, 148, 226) if self.player.active_powerups.get(1) else (255, 255, 255)
+        )
         self.screen.blit(
             cost_font,
             (self.frame.get_width() + 20, 180)
@@ -596,11 +651,39 @@ class Game:
 
         pygame.draw.rect(self.screen, (111, 194, 52), pygame.Rect(rectx, recty, 300, 32))
 
+        percent = self.money / self.money_limit
+        if percent < 0:
+            percent = 0
+        elif percent > 1:
+            percent = 1
+
         pygame.draw.rect(self.screen, (199, 84, 80), pygame.Rect(
             rectx, recty,
-            int((self.power_used * self.cost) / self.money_limit * 300), # <- bar width
+            int(percent * 300),  # <- bar width
             32
         ))
+
+        # powerups
+        if len(self.player.active_powerups.keys()):
+            basex = self.frame.get_width()+20
+            basey = recty+75
+
+            self.screen.blit(
+                self.fonts.arcade_25.render(f'Power Ups', False, (142, 142, 142)),
+                (basex, basey)
+            )
+
+            offset_mult = 1
+            for id, times in self.player.active_powerups.items():
+                current, max_time = times
+                y_offset = basey+(30*offset_mult)
+
+                self.screen.blit(self.textures.powerup_icons[id], (basex, y_offset))
+                self.screen.blit(
+                    self.fonts.arcade_25.render(f'{self.powerup_names[id]} {format((max_time-current) / FRAMERATE, ".2f")}s', False, (255, 255, 255)),
+                    (basex+35, y_offset)
+                )
+                offset_mult += 1
 
         self.screen.blit(self.frame, (10, 10))
         pygame.display.update()
@@ -659,11 +742,49 @@ class Game:
         for i in range(50):
             self.player.x, self.player.y = v_player.slerp(end_pos, i / 50)
             self.player.angle += random.randint(5, 8)  # 360 / 50
+            self.tick_powerups()
             self.full_draw()
             pygame.draw.circle(self.frame, 0x0000ff, tuple(map(int, (self.player.x, self.player.y))), 5)
             pygame.draw.circle(self.frame, 0xff0000, tuple(map(int, end_pos)), 5)
-            self.screen_clock.tick(60)
+            self.screen_clock.tick(FRAMERATE)
 
+    def try_spawn_powerup(self):
+        if self.last_powerup > FRAMERATE * 7:  # 30 seconds
+            type = random.randint(0, 2)
+
+            cx = random.randint(0, self.tile_grid_w - 6)
+            cy = random.randint(0, self.tile_grid_h - 6)
+
+            ss_x = cx * self.textures.base_tile_size
+            ss_y = cy * self.textures.base_tile_size
+            self.log(f'Spawning powerup type {type} at {ss_x}, {ss_y}', 0)
+
+            instance = Powerup(self, ss_x, ss_y, 0, self.textures.powerups[type])
+            instance.type = type
+            instance.draw_priority = 10
+
+            self.objects.append(instance)
+
+            self.last_powerup = 0
+
+    def tick_powerups(self):
+        to_cull = []
+        for powerup, times in self.player.active_powerups.items():
+            current, max_allowed = times
+            if current >= max_allowed:
+                to_cull.append(powerup)
+                continue
+            self.player.active_powerups[powerup] = (current+1, max_allowed)
+
+        for idx in to_cull:
+            if idx == 0:
+                self.player.speed = 5
+                self.current_power_consumption = self.normal_power_consumption
+            elif idx == 1:
+                self.current_cost = self.normal_cost
+            elif idx == 2:
+                self.objects[1].stunned = False
+            del self.player.active_powerups[idx]
 
 class GameObject(pygame.sprite.Sprite):
     def __init__(self, parent: Game, start_x=0, start_y=0, start_angle=0, image=None):
@@ -798,6 +919,17 @@ class Player(GameObject):
 
         self.key_space = pygame.K_SPACE
 
+        """
+        Active power-ups:
+        
+        {
+            <powerup_id>: <frames_elapsed>, <max_frames>)
+        }
+        
+        """
+
+        self.active_powerups = {}
+
     def update(self):
         """
         Player Update function. Moves the player's position towards
@@ -851,11 +983,13 @@ class Player(GameObject):
             # calculate the true speed based on slowdown, use self.speed if no slowdown
             if is_slowed_down:
                 real_speed = (self.speed / 2)
-                self.parent.current_power_consumption = self.parent.slow_power_consumption
+                if self.parent.current_power_consumption == self.parent.normal_power_consumption:
+                    self.parent.current_power_consumption = self.parent.slow_power_consumption
             else:
                 real_speed = self.speed
-                self.parent.current_power_consumption = self.parent.normal_power_consumption
-            self.parent.power_used += int(self.parent.current_power_consumption / 60)
+                if self.parent.current_power_consumption == self.parent.slow_power_consumption:
+                    self.parent.current_power_consumption = self.parent.normal_power_consumption
+            self.parent.power_used += int(self.parent.current_power_consumption / FRAMERATE)
 
             # calculate step movement every frame
             step_x = math.cos(math.radians(-self.angle)) * real_speed
@@ -866,6 +1000,8 @@ class Player(GameObject):
                 self.x += step_x
             if frame_h > self.globalRect.center[1] + step_y > 0:
                 self.y += step_y
+
+            self.parent.money += self.parent.current_cost * self.parent.current_power_consumption
 
     def offset_point(self, probe: tuple):
         """
@@ -897,7 +1033,7 @@ class Enemy(GameObject):
         super(Enemy, self).__init__(*args, **kwargs)
 
         self.draw_priority = 90  # lower than player by 10
-        self.speed = 4  # chasing speed, for reference, the player's value is 5
+        self.speed = 3.5  # chasing speed, for reference, the player's value is 5
         self.target = None  # the target to chase, this is set after initialization
         # instead of heading for the target's center, where should the enemy head for?
         self.hunt_offset = (self.rect.centerx, self.rect.centery + 40)
@@ -915,6 +1051,8 @@ class Enemy(GameObject):
         self.kick_charge = 0
         # frames required to complete charge
         self.charge_duration = 17
+        # is stunned?
+        self.stunned = False
 
     def update(self):
         """
@@ -936,6 +1074,9 @@ class Enemy(GameObject):
                 self.draw_priority = 90
             else:
                 self.draw_priority = 110
+
+            if self.stunned:
+                return
 
             self.horizontal_flip = relative_x > 0
 
@@ -979,7 +1120,9 @@ class Enemy(GameObject):
                 self.kicking = False
 
     def draw(self, *args, **kwargs):
-        if not self.kicking:
+        if self.stunned:
+            self.image = self.parent.textures.enemy_stun
+        elif not self.kicking:
             if self.anim % self.animate_every == 0:
                 self.image = self.parent.textures.enemy_cycle[int(self.anim / self.animate_every)]
 
@@ -998,6 +1141,38 @@ class Enemy(GameObject):
             )
             return
         super(Enemy, self).draw(*args)
+
+
+class Powerup(GameObject):
+    def __init__(self, *args, **kwargs):
+        super(Powerup, self).__init__(*args, **kwargs)
+        self.start_y = self.y
+        self.type = 0
+        self.active = True
+
+    def update(self):
+        if self.active:
+            self.y = self.start_y + (math.sin(self.parent.frames_since_game_start/10)*3)
+            px, py = self.parent.player.globalRect.center
+
+            dist_sq = abs((self.globalRect.centerx-px))**2 + abs((self.globalRect.centery-py))**2
+
+            if dist_sq <= 1024:  # 32^2
+                self.trigger()
+                # in range
+                self.active = False
+
+    def trigger(self):
+        if self.type == 0:
+            self.parent.player.speed = 10
+            self.parent.current_power_consumption = 3000
+            self.parent.player.active_powerups[0] = (0, FRAMERATE*10)
+        if self.type == 1:
+            self.parent.current_cost = self.parent.powered_up_cost
+            self.parent.player.active_powerups[1] = (0, FRAMERATE*3)
+        if self.type == 2:
+            self.parent.objects[1].stunned = True
+            self.parent.player.active_powerups[2] = (0, FRAMERATE*5)
 
 
 if __name__ == '__main__':
