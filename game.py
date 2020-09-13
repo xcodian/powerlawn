@@ -1,4 +1,6 @@
 #!/usr/bin/python
+# -*- coding: utf-8 -*-
+
 """
 ██████╗  ██████╗ ██╗    ██╗███████╗██████╗ ██╗      █████╗ ██╗    ██╗███╗   ██╗
 ██╔══██╗██╔═══██╗██║    ██║██╔════╝██╔══██╗██║     ██╔══██╗██║    ██║████╗  ██║
@@ -8,7 +10,15 @@
 ╚═╝      ╚═════╝  ╚══╝╚══╝ ╚══════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝ ╚═╝  ╚═══╝
                             by Martin Velikov
 """
+import os
+import math
+import copy
+import time
 import random
+import traceback
+import warnings
+import logging
+import webbrowser
 
 VERSION = '1.0'
 
@@ -27,14 +37,19 @@ SCREEN_H = 720
 # fixed framerate
 FRAMERATE = 60
 # resources folder
-RES_FOLDER = 'res'
+RES_FOLDER = os.path.join(
+    os.path.abspath(os.path.dirname(__file__)),
+    'res'
+)
 
-import os
-import math
-import time
-import traceback
-import logging
-import warnings
+# check version first
+import sys
+if not sys.version_info.major == 3 and sys.version_info.minor >= 5:
+    print('This program requires Python version 3.5 or above.')
+    print('You are running Python {0.major}.{0.minor}.{0.micro}!'.format(
+        sys.version_info
+    ))
+    exit(1)
 
 # hide DeprecationWarning for float coordinate movement
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -107,6 +122,10 @@ def cell_from_screenspace(screenspace_coords: tuple, tile_size: int):
     )
 
 
+def open_github():
+    webbrowser.open('https://github.com/xxcodianxx/', autoraise=True)
+
+
 class Game:
     """
     Main game object that should take care of most of the game logic such as score, keeping track of objects
@@ -134,7 +153,7 @@ class Game:
         List of game objects to be updated
         Note that index 0 should always be reserved for the player
 
-    event_callback : dict{pygame.event.Event : function}
+    event_callback_ingame : dict{pygame.event.Event : function}
         Bindings from PyGame events to class methods
         If a method is within this list, it should have at least one variable to catch the original event
 
@@ -188,11 +207,16 @@ class Game:
         # list of GameObject's or subclasses thereof
         self.objects = []
         # dict of events and their corresponding functions to be run when caught
-        self.event_callback = {
-            pygame.QUIT: self.game_quit,
-            pygame.KEYUP: self.process_key,
-            pygame.KEYDOWN: self.process_key
+        self.event_callback_ingame = {
+            pygame.QUIT: self.event_quit,
+            pygame.KEYUP: self.event_key,
+            pygame.KEYDOWN: self.event_key
         }
+
+        self.event_callback_menu = {
+            pygame.QUIT: self.event_quit
+        }
+
         # currently pressed keys
         self.keys_down = []
         # textures to load
@@ -237,6 +261,7 @@ class Game:
         self.frames_since_game_start = 0
         # last_powerup
         self.last_powerup = 0
+        self.powerups_used = 0
 
         self.powerup_names = {
             0: 'Swiftness',
@@ -244,10 +269,28 @@ class Game:
             2: 'Human Zapper'
         }
 
+        self.current_power_consumption = self.normal_power_consumption
+        self.paused = False
+        self.game_started = False
+
+        self.mouse_pos = (0, 0)
+        self.mouse_pressed = (False, False, False)
+
+        self.button_pressed = None
+
+        self.main_menu_page = 0
+
+        # old game objects
+        self.game_objects = []
+
+        self.pause_button = None
+        self.game_over = False
+
     class Textures:
         def __init__(self):
             self.base_tile_size = 10
             self.base_bg_tile_size = 60
+            self.base_enemy_size = (100, 200)
 
             # tiles
             self.tile_dev = pygame.image.load(
@@ -284,12 +327,13 @@ class Game:
 
             # replicated background that should fill the screen, see Game.bake_background_texture
             self.full_bg = None
+            self.screen_full_bg = None
 
             self.enemy_kick = [
                 pygame.transform.scale(
                     pygame.image.load(
                         os.path.join(RES_FOLDER, 'img', 'enemy', f'kick{i}.png')
-                    ), (100, 200)
+                    ), self.base_enemy_size
                 )
                 for i in (0, 1)
             ]
@@ -298,7 +342,7 @@ class Game:
                 pygame.transform.scale(
                     pygame.image.load(
                         os.path.join(RES_FOLDER, 'img', 'enemy', f'run{i}.png')
-                    ), (100, 200)
+                    ), self.base_enemy_size
                 )
                 for i in (0, 1, 2, 1)
             ]
@@ -306,7 +350,7 @@ class Game:
             self.enemy_stun = pygame.transform.scale(
                 pygame.image.load(
                     os.path.join(RES_FOLDER, 'img', 'enemy', 'stun.png')
-                ), (100, 200)
+                ), self.base_enemy_size
             )
 
             self.wallet_icon = pygame.image.load(
@@ -321,6 +365,35 @@ class Game:
 
             self.powerup_icons = [
                 pygame.transform.scale(i, (25, 25)) for i in self.powerups
+            ]
+
+            self.title = pygame.image.load(
+                os.path.join(RES_FOLDER, 'img', 'title.png')
+            )
+
+            self.button = [
+                pygame.image.load(
+                    os.path.join(RES_FOLDER, 'img', 'ui', 'button', f'{i}.png')
+                )
+                for i in (0, 1, 2)
+            ]
+
+            self.button_small = [
+                pygame.image.load(
+                    os.path.join(RES_FOLDER, 'img', 'ui', 'smallbutton', f'{i}.png')
+                )
+                for i in (0, 1, 2)
+            ]
+
+            self.bg_frame = pygame.image.load(
+                os.path.join(RES_FOLDER, 'img', 'ui', 'frame.png')
+            )
+
+            self.keycaps = [
+                pygame.image.load(
+                    os.path.join(RES_FOLDER, 'img', 'ui', 'keycaps', f'{i}.png')
+                )
+                for i in ('a', 'd')
             ]
 
     class Fonts:
@@ -358,9 +431,13 @@ class Game:
 
     @property
     def player(self):
-        return self.objects[0]
+        if len(self.objects):
+            return self.objects[0]
+        return None
 
-    def run(self):
+    # ---------------- Essential ----------------
+
+    def run_forever(self):
         """
         Initialize and run the game forever until it quits.
         If this function returns, then the game has ended.
@@ -381,49 +458,251 @@ class Game:
         self.screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
         self.screen_clock = pygame.time.Clock()  # frame clock
 
-        # create the game objects
-        self.log(f'Creating objects...')
-        self.objects = [
-            # slot 0 should always be the main player
-            Player(parent=self, start_x=-45, start_y=0, start_angle=0, image=self.textures.player),
-            Enemy(parent=self, start_x=500, start_y=500, start_angle=0, image=self.textures.enemy_kick[0])
-        ]
-
-        # set enemy target
-        self.objects[1].target = self.player
-
-        # make the big tile array
-        self.log('Baking initial tilemap...')
-        self.bake_tile_grid()
-
         # make a quadrant of the player path
         self.log(f'Baking path quadrant...')
         self.bake_path_quadrant()
 
         # replicate the grass texure to fill the frame's size
+        self.log(f'Baking screen texture to size {SCREEN_W}x{SCREEN_H}...')
+        self.textures.screen_full_bg = self.bake_background_texture(self.screen.get_size())
+
+        # replicate the grass texure to fill the frame's size
         self.log(f'Baking background texture to size {FRAME_W}x{FRAME_H}...')
-        self.bake_background_texture()
+        self.textures.full_bg = self.bake_background_texture(self.frame.get_size())
+
+        self.log(f'Setting up main menu...')
+        self.prepare_main_menu()
 
         # finally, start the game
         self.log('Starting event loop...')
         self.running = True
-        self.log(f'{len(self.objects):,} objects active')
-        try:
-            while self.running:
-                self.tick_objects()  # update everything
-                self.tick_powerups()
-                self.full_draw()
-                self.process_events(pygame.event.get())  # process event queue
-                self.frames_since_game_start += 1
-                self.last_powerup += 1
-                self.try_spawn_powerup()
-                self.screen_clock.tick(FRAMERATE)  # cAlm tHe TiDe
-        except Exception as e:
-            self.log(str(e), 2)  # error :(
-            traceback.print_exception(type(e), e, e.__traceback__)  # show in console
-            return 1, e
+
+        while self.running:
+            self.mouse_pos = pygame.mouse.get_pos()
+            self.mouse_pressed = pygame.mouse.get_pressed()
+            if self.game_started:
+                if not self.paused:
+                    # the game has begun
+                    self.tick_objects()  # update everything
+                    self.tick_powerups()
+                    self.full_draw()
+                    self.process_events(pygame.event.get())  # process event queue
+                    self.frames_since_game_start += 1
+                    self.last_powerup += 1
+                    self.try_spawn_powerup()
+
+                    if self.paused:
+                        self.enter_pause_menu()
+                else:
+                    self.draw_pause_menu()
+                    self.process_events(pygame.event.get())
+            else:
+                self.draw_main_menu()
+                self.process_events(pygame.event.get())
+            self.screen_clock.tick(FRAMERATE)  # cAlm tHe TiDe
         self.log('Game exited normally', 0)
         return 0
+
+    def start_game(self, e=None):
+        self.log('Preparing game...')
+
+        # make the big tile array
+        self.log('Baking initial tilemap...')
+        self.bake_tile_grid()
+
+        # create the game objects
+        self.log(f'Creating objects...')
+        self.objects = [
+            # slot 0 should always be the main player
+            Player(parent=self, start_x=-45, start_y=0, start_angle=0, image=self.textures.player),
+            Enemy(parent=self, start_x=500, start_y=500, start_angle=0, image=self.textures.enemy_kick[0]),
+        ]
+        self.pause_button = Button(self, self.frame.get_width()+20, self.screen.get_height()-74, 'P', self.textures.button_small, self.set_paused)
+
+        self.log(f'{len(self.objects):,} objects active')
+
+        # set enemy target
+        self.objects[1].target = self.player
+
+        self.game_started = True
+
+    # ---------------- Main Menu ----------------
+
+    def prepare_main_menu(self):
+        if self.main_menu_page == 0:
+            self.objects = [
+                Button(self, 100, 440, 'Start', self.textures.button, self.start_game),
+                Button(self, 100, 520, 'How to Play', self.textures.button, self.switch_main_menu_page, [1]),
+                Button(self, 100, 600, 'Credits', self.textures.button, self.switch_main_menu_page, [2])
+            ]
+        elif self.main_menu_page == 2:
+            self.objects = [
+                Button(self, self.screen.get_width() / 2 - 150, 450, 'GitHub', self.textures.button, open_github),
+                Button(self, self.screen.get_width() / 2 - 150, 620, 'Back', self.textures.button, self.switch_main_menu_page, [0])
+            ]
+        else:
+            self.objects = [
+                Button(self, self.screen.get_width() / 2 - 150, 620, 'Back', self.textures.button, self.switch_main_menu_page, [0])
+            ]
+
+    def draw_main_menu(self):
+        self.screen.blit(self.textures.screen_full_bg, (0, 0))
+
+        if self.main_menu_page == 0:
+            self.screen.blit(self.textures.title, (0, 0))
+        elif self.main_menu_page == 1:
+            instructions = """
+You've one job: mow the lawn!
+Easy, right? Not quite. You're 
+one of those new "smart" lawnmowers.
+You're quite power hungry, so
+try to do it as fast as possible.
+Oh, also, don't get caught by 
+your owner. He won't hesitate.
+"""
+
+            self.show_info_screen('How To Play', instructions)
+            control_text = self.fonts.arcade_25.render('Use   and   to turn the lawnmower.', False, (61, 64, 66))
+            control_text_x = (self.screen.get_width() / 2) - (control_text.get_width() * 0.5)
+            self.screen.blit(
+                control_text,
+                (control_text_x, 460)
+            )
+
+            self.screen.blit(self.textures.keycaps[0], (control_text_x + 70, 440))
+            self.screen.blit(self.textures.keycaps[1], (control_text_x + 220, 440))
+        elif self.main_menu_page == 2:
+            credits_text = f"""
+            Version {VERSION}            
+
+All programming & visual assets by
+me. Created for Year 10 Technology
+school assignment at GIHS.
+
+By Martin Velikov (xxcodianxx)
+"""
+            self.show_info_screen(f'Power Lawn', credits_text)
+
+        self.tick_objects()
+        self.draw_objects()
+
+        pygame.display.update()
+
+    def switch_main_menu_page(self, page):
+        self.main_menu_page = page
+        self.prepare_main_menu()
+        self.draw_main_menu()
+
+    def show_info_screen(self, title, description):
+        middle = self.screen.get_width() / 2
+        self.screen.blit(
+            self.textures.bg_frame,
+            (middle - (self.textures.bg_frame.get_width() * 0.5), 50)
+        )
+
+        title = self.fonts.arcade_50.render(title, False, (61, 64, 66))
+        self.screen.blit(
+            title,
+            (middle - (title.get_width() * 0.5), 80)
+        )
+
+        for idx, line in enumerate(description.splitlines()):
+            line_text = self.fonts.arcade_25.render(line, False, (61, 64, 66))
+            self.screen.blit(
+                line_text,
+                (middle - 400, 150 + (30 * idx))
+            )
+
+    # ---------------- Pause Menu ----------------
+
+    def set_paused(self):
+        """Helper function to only set the paused variable, so it can be binded to callbacks"""
+        self.paused = True
+
+    def enter_pause_menu(self):
+        self.game_objects = self.objects
+        if self.game_over:
+            self.objects = [
+                Button(self, self.screen.get_width() / 2 - 150, 620, 'Continue', self.textures.button, self.reset_to_main_menu),
+            ]
+        else:
+            self.objects = [
+                Button(self, self.screen.get_width() / 2 - 350, 620, 'Main Menu', self.textures.button, self.reset_to_main_menu),
+                Button(self, self.screen.get_width() / 2 + 50, 620, 'Continue', self.textures.button, self.continue_game)
+            ]
+
+    def draw_pause_menu(self):
+        self.screen.blit(self.textures.screen_full_bg, (0, 0))
+
+        if not self.game_over:
+            self.show_info_screen('Paused', '       The game is paused.')
+
+            newsize = (300, 300)
+            newpos = (self.screen.get_width() / 2 - newsize[0]*0.5, 200)
+            margins = (4, 4)
+
+            pygame.draw.rect(self.screen, 0x010101, pygame.Rect(
+                newpos[0] - (margins[0] * 0.5),
+                newpos[1] - (margins[1] * 0.5),
+                newsize[0] + (margins[0]),
+                newsize[1] + (margins[1])
+            ))
+            self.screen.blit(pygame.transform.scale(self.frame, newsize), newpos)
+        else:
+            self.draw_game_over_screen()
+
+        self.tick_objects()
+        self.draw_objects()
+
+        pygame.display.update()
+
+    def continue_game(self):
+        self.objects = self.game_objects
+        self.paused = False
+
+    def reset_to_main_menu(self):
+        self.money = 0
+        self.current_power_consumption = self.normal_power_consumption
+        self.paused = False
+        self.main_menu_page = 0
+        self.frames_since_game_start = 0
+        self.current_cost = 0.0005
+        self.power_used = 0
+        self.game_started = False
+        self.game_over = False
+
+        self.prepare_main_menu()
+
+    # ---------------- Game Over ----------------
+
+    def set_game_over(self):
+        self.paused = True
+        self.game_over = True
+
+    def draw_game_over_screen(self):
+        percent, mown = self.get_mown_percentage()
+
+        msg = 'You ran out of money!'
+        if percent == 100:
+            msg = 'You mowed the entire lawn!'
+
+        stat = f'''
+{msg}
+
+Lawn Covered: {format(percent, ".2f")}%
+Tiles Mown: {mown}
+Power Used: {self.power_used}W
+Powerups Consumed: {self.powerups_used}
+
+You were alive for {self.frames_since_game_start / FRAMERATE} seconds.
+
+Have another shot, will ya?
+'''
+
+        self.show_info_screen('Game Over', stat)
+
+
+    # ---------------- Initialization ----------------
 
     def bake_tile_grid(self):
         """
@@ -437,6 +716,8 @@ class Game:
         Where each number represents the tile state - here, 0 is full tile.
         To reference any cell within it: tilemap[row][column]
         """
+        self.tile_grid = []
+        self.tile_grid_h = 0
         self.tile_grid_w = divmod(self.frame.get_width(), self.textures.base_tile_size)[0]
         for _ in range(0, self.frame.get_height(), self.textures.base_tile_size):
             self.tile_grid.append(
@@ -465,26 +746,25 @@ class Game:
                 s += (' ' * 28) + ': ' + ''.join(map(lambda v: ['[-]', '[#]', '[$]'][v], r)) + '\n'
             self.log('Path quadrant result (#/full, $/half, -/empty): \n' + s.rstrip(), 0)
 
-    def bake_background_texture(self):
+    def bake_background_texture(self, size=(700, 700)):
         """
         Replicates the background tile to the required size of the frame.
         Outputs result to self.textures.full_bg
         """
-        # get frame size
-        fw, fh = self.frame.get_size()
-
         # create surface large enough to house texture
-        bg = pygame.Surface((fw, fh))
+        bg = pygame.Surface(size)
 
         # blit tile texture to larger texture
-        for y in range(0, fh, self.textures.base_bg_tile_size):
-            for x in range(0, fw, self.textures.base_bg_tile_size):
+        for y in range(0, size[1], self.textures.base_bg_tile_size):
+            for x in range(0, size[0], self.textures.base_bg_tile_size):
                 tile = pygame.transform.rotate(
                     self.textures.tile_bg_grass, random.choice((0, 90, 180, 270))
                 )
                 bg.blit(tile, (x, y))
 
-        self.textures.full_bg = bg
+        return bg
+
+    # ---------------- Updaters ----------------
 
     def update_path(self):
         """
@@ -532,6 +812,67 @@ class Game:
                         self.tile_grid[y][x] = qc
                     quad += 1
 
+    def tick_objects(self):
+        """
+        Update all game objects, draw them to the screen call frame_to_screen.
+        Gets called every frame, so make it fast.
+        """
+        to_cull = []
+        for idx, game_object in enumerate(self.objects):
+            game_object.update()
+
+            if isinstance(game_object, Powerup):
+                if not game_object.active:
+                    to_cull.append(idx)
+
+        for idx in to_cull:
+            del self.objects[idx]
+
+    def tick_powerups(self):
+        to_cull = []
+        for powerup, times in self.player.active_powerups.items():
+            current, max_allowed = times
+            if current >= max_allowed:
+                to_cull.append(powerup)
+                continue
+            self.player.active_powerups[powerup] = (current+1, max_allowed)
+
+        for idx in to_cull:
+            if idx == 0:
+                self.player.speed = 5
+                self.current_power_consumption = self.normal_power_consumption
+            elif idx == 1:
+                self.current_cost = self.normal_cost
+            elif idx == 2:
+                self.objects[1].stunned = False
+            del self.player.active_powerups[idx]
+
+    def try_spawn_powerup(self):
+        if self.last_powerup > FRAMERATE * 7:  # 30 seconds
+            type = random.randint(0, 2)
+
+            cx = random.randint(0, self.tile_grid_w - 6)
+            cy = random.randint(0, self.tile_grid_h - 6)
+
+            ss_x = cx * self.textures.base_tile_size
+            ss_y = cy * self.textures.base_tile_size
+            self.log(f'Spawning powerup type {type} at {ss_x}, {ss_y}', 0)
+
+            instance = Powerup(self, ss_x, ss_y, 0, self.textures.powerups[type])
+            instance.type = type
+            instance.draw_priority = 10
+
+            self.objects.append(instance)
+
+            self.last_powerup = 0
+
+    # ---------------- Rendering ----------------
+
+    def full_draw(self):
+        self.draw_tilemap()
+        self.draw_objects()
+        self.draw_ui_and_frame()
+
     def draw_tilemap(self):
         """
         Render the tilemap to the screen.
@@ -556,35 +897,9 @@ class Game:
                 ss_pos = (cx * self.textures.base_tile_size, cy * self.textures.base_tile_size)
                 self.frame.blit(tex, ss_pos)
 
-    def tick_objects(self):
-        """
-        Update all game objects, draw them to the screen call frame_to_screen.
-        Gets called every frame, so make it fast.
-        """
-        to_cull = []
-        for idx, game_object in enumerate(self.objects):
-            game_object.update()
-
-            if isinstance(game_object, Powerup):
-                if not game_object.active:
-                    to_cull.append(idx)
-
-        for idx in to_cull:
-            del self.objects[idx]
-
-        self.update_path()
-
     def draw_objects(self):
         for game_object in sorted(self.objects, key=lambda x: x.draw_priority):
             game_object.draw()
-
-    def get_mown_percentage(self):
-        mown = 0
-        for r in self.tile_grid:
-            for c in r:
-                if c:
-                    mown += 1
-        return (mown / (70 * 70)) * 100, mown
 
     def draw_ui_and_frame(self):
         """
@@ -595,6 +910,8 @@ class Game:
         self.screen.fill(0x262626)
 
         percent, mown = self.get_mown_percentage()
+        if percent == 100:
+            self.set_game_over()
 
         self.screen.blit(
             self.fonts.arcade_25.render(f'Lawn Stats', False, (142, 142, 142)),
@@ -685,25 +1002,13 @@ class Game:
                 )
                 offset_mult += 1
 
+        self.pause_button.update()
+        self.pause_button.draw()
+
         self.screen.blit(self.frame, (10, 10))
         pygame.display.update()
 
-    def full_draw(self):
-        self.draw_tilemap()
-        self.draw_objects()
-        self.draw_ui_and_frame()
-
-    def game_quit(self, e):
-        """Event callback method to quit the game. """
-        self.running = False
-        pygame.quit()
-
-    def process_key(self, e):
-        """Event callback method to process keypresses."""
-        if (e.type == pygame.KEYDOWN) and (e.key not in self.keys_down):
-            self.keys_down.append(e.key)
-        elif (e.type == pygame.KEYUP) and (e.key in self.keys_down):
-            self.keys_down.remove(e.key)
+    # ---------------- Events & Processing ----------------
 
     def process_events(self, queue: tuple = ()):
         """
@@ -714,17 +1019,36 @@ class Game:
         if queue == ():  # save a bit of processing power
             return
 
+        # get the correct binding dictionary for the main menu or ingame game state
+        callback_mapping = (self.event_callback_ingame if self.game_started else self.event_callback_menu)
+
         for e in queue:
             # type define event object (pygame is confused)
-            e: pygame.event.Event()
+            e: pygame.event.Event
 
             # is the event's callback defined? if yes, run it
-            if e_callback := self.event_callback.get(e.type):
+            e_callback = callback_mapping.get(e.type)
+            if e_callback:
                 e_callback(e)
                 # skip to next loop cycle
                 continue
             # if the cycle is not skipped here, say that we missed the event on the DEBUG level
             # self.log(f'Uncaught event {e.type}', 0)
+
+    def event_key(self, e = None):
+        """Event callback method to process keypresses."""
+        if (e.type == pygame.KEYDOWN) and (e.key not in self.keys_down):
+            self.keys_down.append(e.key)
+        elif (e.type == pygame.KEYUP) and (e.key in self.keys_down):
+            self.keys_down.remove(e.key)
+
+    def event_quit(self, e = None):
+        """Event callback method to quit the game. """
+        self.running = False
+        self.log('Quitting...')
+        pygame.quit()
+
+    # ---------------- Miscellaneous ----------------
 
     def kick_player(self):
         v_player = Vector2(self.player.x, self.player.y)
@@ -748,43 +1072,14 @@ class Game:
             pygame.draw.circle(self.frame, 0xff0000, tuple(map(int, end_pos)), 5)
             self.screen_clock.tick(FRAMERATE)
 
-    def try_spawn_powerup(self):
-        if self.last_powerup > FRAMERATE * 7:  # 30 seconds
-            type = random.randint(0, 2)
+    def get_mown_percentage(self):
+        mown = 0
+        for r in self.tile_grid:
+            for c in r:
+                if c:
+                    mown += 1
+        return (mown / (70 * 70)) * 100, mown
 
-            cx = random.randint(0, self.tile_grid_w - 6)
-            cy = random.randint(0, self.tile_grid_h - 6)
-
-            ss_x = cx * self.textures.base_tile_size
-            ss_y = cy * self.textures.base_tile_size
-            self.log(f'Spawning powerup type {type} at {ss_x}, {ss_y}', 0)
-
-            instance = Powerup(self, ss_x, ss_y, 0, self.textures.powerups[type])
-            instance.type = type
-            instance.draw_priority = 10
-
-            self.objects.append(instance)
-
-            self.last_powerup = 0
-
-    def tick_powerups(self):
-        to_cull = []
-        for powerup, times in self.player.active_powerups.items():
-            current, max_allowed = times
-            if current >= max_allowed:
-                to_cull.append(powerup)
-                continue
-            self.player.active_powerups[powerup] = (current+1, max_allowed)
-
-        for idx in to_cull:
-            if idx == 0:
-                self.player.speed = 5
-                self.current_power_consumption = self.normal_power_consumption
-            elif idx == 1:
-                self.current_cost = self.normal_cost
-            elif idx == 2:
-                self.objects[1].stunned = False
-            del self.player.active_powerups[idx]
 
 class GameObject(pygame.sprite.Sprite):
     def __init__(self, parent: Game, start_x=0, start_y=0, start_angle=0, image=None):
@@ -800,6 +1095,9 @@ class GameObject(pygame.sprite.Sprite):
         self.draw_priority = 100  # object update priority, higher = sooner
 
         self.parent = parent
+        if image is None:
+            image = pygame.Surface((0, 0))
+
         self.image = image
 
         self.x, self.y = start_x, start_y
@@ -917,7 +1215,7 @@ class Player(GameObject):
         self.key_right = pygame.K_d
         self.key_left = pygame.K_a
 
-        self.key_space = pygame.K_SPACE
+        self.key_pause = pygame.K_ESCAPE
 
         """
         Active power-ups:
@@ -943,6 +1241,8 @@ class Player(GameObject):
                 self.angle -= self.turnspeed
             if self.key_left in self.parent.keys_down:
                 self.angle += self.turnspeed
+            if self.key_pause in self.parent.keys_down:
+                self.parent.set_paused()
             """
             IF YOU EVER NEED CONTROLLABLE SPEED AGAIN...
             
@@ -1002,6 +1302,10 @@ class Player(GameObject):
                 self.y += step_y
 
             self.parent.money += self.parent.current_cost * self.parent.current_power_consumption
+            if self.parent.money >= self.parent.money_limit:
+                self.parent.set_game_over()
+
+            self.parent.update_path()
 
     def offset_point(self, probe: tuple):
         """
@@ -1163,6 +1467,7 @@ class Powerup(GameObject):
                 self.active = False
 
     def trigger(self):
+        self.parent.powerups_used += 1
         if self.type == 0:
             self.parent.player.speed = 10
             self.parent.current_power_consumption = 3000
@@ -1173,6 +1478,80 @@ class Powerup(GameObject):
         if self.type == 2:
             self.parent.objects[1].stunned = True
             self.parent.player.active_powerups[2] = (0, FRAMERATE*5)
+
+
+
+class Button(GameObject):
+    def __init__(self, parent: Game, start_x, start_y, text: str, image_set: list, callback=None, callback_args=[]):
+        super(Button, self).__init__(parent, start_x, start_y, 0, image_set[0])
+        self.text = text
+        self.image_set = image_set
+        self.callback = callback
+        self.callback_args = callback_args
+
+        self.font_colors = (
+            (60, 63, 65),
+            (255, 251, 181),
+            (33, 33, 33)
+        )
+        self.font_color = self.font_colors[0]
+        self.pressed = False
+
+    def update(self):
+        mx, my = self.parent.mouse_pos
+
+        if self.parent.button_pressed in (None, self):
+            # check if mouse is within rect
+            hover = (
+                self.globalRect.x <= mx <= (self.globalRect.x+self.globalRect.w)
+                and
+                self.globalRect.y <= my <= (self.globalRect.y+self.globalRect.h)
+            )
+
+            asset_idx = 0
+            if hover:
+                if self.parent.mouse_pressed[0]:
+                    asset_idx = 2
+                    self.pressed = True
+                    self.parent.button_pressed = self
+                else:
+                    asset_idx = 1
+            else:
+                asset_idx = 0
+
+            if self.pressed:
+                if not self.parent.mouse_pressed[0]:
+                    # trigger
+                    if hover:
+                        self.log(f'Button "{self.text}" pressed.', 0)
+                        if self.callback is not None:
+                            self.callback(*self.callback_args)
+
+                    self.pressed = False
+                    self.parent.button_pressed = None
+
+            asset_idx = asset_idx if not self.pressed else 2
+            self.image = self.image_set[asset_idx]
+            self.font_color = self.font_colors[asset_idx]
+
+    def draw(self, surface=None, *args, **kwargs):
+        if surface is None:
+            surface = self.parent.screen
+
+        # force copy of image here by scaling to exact same size
+        image = pygame.transform.scale(self.image, self.image.get_size())
+
+        text_surface = self.parent.fonts.arcade_25.render(self.text, False, self.font_color)
+        tx = (self.rect.w * 0.5) - (text_surface.get_width() * 0.5)
+        ty = (self.rect.h * 0.5) - (text_surface.get_height() * 0.5)
+
+        image.blit(
+            text_surface,
+            (tx, ty)
+        )
+
+        super(Button, self).draw(surface, image)
+
 
 
 if __name__ == '__main__':
@@ -1193,7 +1572,7 @@ if __name__ == '__main__':
     game = Game(logger=_logger)  # initialize game
     game.log('Starting game...')
     try:
-        rcode = game.run()  # run the game forever, then get return code
+        rcode = game.run_forever()  # run the game forever, then get return code
     except Exception as e:
         # an error has occurred
         game.log(str(e), 3)  # log the error
