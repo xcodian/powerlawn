@@ -1,4 +1,4 @@
-#powerlawn
+![powerlawn](https://raw.githubusercontent.com/xxcodianxx/xxcodianxx/master/res/powerlawn/title.png)
 
 A fast-paced arcade "strategy" game about lawnmowers, lawns & mowing them.
 Written in [Python](https://www.python.org/) using the [PyGame](https://www.pygame.org) 
@@ -9,7 +9,7 @@ graphical library.
 * [Python](https://www.python.org/) 3.5+
 * [PyGame](https://www.pygame.org) 1.9.6
 
-###Running the Game
+### Running the Game
 1. **Clone the game files and `cd` into the directory**
     ```shell script
     $ git clone https://github.com/xxcodianxx/powerlawn.git
@@ -28,7 +28,7 @@ graphical library.
    command `py -3` instead of `python3`. Also, make sure that you don't
    type the `$` prefixing every line.
  
-###License
+### License
 [View License File](LICENSE)
 ```
 MIT License
@@ -53,3 +53,6 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+### Gallery
+![Game Screenshot](https://raw.githubusercontent.com/xxcodianxx/xxcodianxx/master/res/powerlawn/game_screenshot0.png)
