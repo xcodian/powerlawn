@@ -27,7 +27,15 @@ graphical library.
    * **Windows Users**: If the above commands don't work, try using the 
    command `py -3` instead of `python3`. Also, make sure that you don't
    type the `$` prefixing every line.
- 
+
+### Additional Credits
+* Arcade Font ([fonts](res/fonts)) - [1001 Free Fonts](https://www.1001freefonts.com/)
+* Background Music ([music.wav](res/sfx/music.wav)) - [Ed Edd n Eddy Theme Song](https://www.youtube.com/watch?v=fbWmMWj2w3I)
+
+*Sprites made with Aseprite v1.2.25-dev*
+* [🌐 Website](https://www.aseprite.org/)
+* [:octocat: Repository](https://github.com/aseprite/aseprite)
+
 ### License
 [View License File](LICENSE)
 ```
