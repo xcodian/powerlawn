@@ -27,6 +27,11 @@ graphical library.
    * **Windows Users**: If the above commands don't work, try using the 
    command `py -3` instead of `python3`. Also, make sure that you don't
    type the `$` prefixing every line.
+   
+   * **Pygame Installation**: Step 2 may not always work for you as the
+   installation of PyGame requires several dependencies. Installation will
+   be different for your distro, eg. on Arch Linux you must install the
+   `python-pygame` package instead.
 
 ### Additional Credits
 * Arcade Font ([fonts](res/fonts)) - [1001 Free Fonts](https://www.1001freefonts.com/)
